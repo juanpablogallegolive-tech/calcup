@@ -1,0 +1,76 @@
+╔═══════════════════════════════════════════════════════════════════╗
+║          COMANDOS GIT - SUBIR CAMBIOS A GITHUB (CMD)             ║
+╚═══════════════════════════════════════════════════════════════════╝
+
+📁 PASO 1: Abrir CMD en la carpeta del proyecto
+   → Explorador de Windows → Barra de direcciones → Escribe "cmd" → Enter
+
+📋 PASO 2: Verificar cambios
+   git status
+
+➕ PASO 3: Agregar cambios
+   git add .
+
+💾 PASO 4: Guardar con mensaje
+   git commit -m "Arreglado código duplicado y configuración"
+
+🚀 PASO 5: Subir a GitHub
+   git push origin main
+
+   (Si tu rama se llama master, usa: git push origin master)
+
+───────────────────────────────────────────────────────────────────
+
+🔐 SI TE PIDE CONTRASEÑA:
+   - GitHub NO acepta contraseñas normales
+   - Necesitas un TOKEN (se genera en GitHub.com)
+   - GitHub.com → Settings → Developer Settings → Personal Access Tokens
+   - Genera uno nuevo con permiso "repo"
+   - Usa el TOKEN como contraseña
+
+───────────────────────────────────────────────────────────────────
+
+⚡ FLUJO RÁPIDO (después de la primera vez):
+   git add .
+   git commit -m "Mensaje de tus cambios"
+   git push
+
+───────────────────────────────────────────────────────────────────
+
+❌ SOLUCIÓN DE ERRORES:
+
+Error: "not a git repository"
+→ No estás en la carpeta correcta
+→ Usa: cd C:\ruta\correcta\npm-install--g-eas-cli
+
+Error: "Updates were rejected"
+→ Primero descarga cambios del servidor
+→ git pull origin main
+→ git push origin main
+
+Error: "Permission denied"
+→ Verifica que estás usando el TOKEN (no contraseña)
+→ Genera un nuevo token si es necesario
+
+───────────────────────────────────────────────────────────────────
+
+✅ ARCHIVO .gitignore (seguridad):
+   
+   Evita subir credenciales sensibles:
+   
+   echo .env >> .gitignore
+   echo backend/.env >> .gitignore
+   echo __pycache__ >> .gitignore
+   echo node_modules >> .gitignore
+
+───────────────────────────────────────────────────────────────────
+
+📱 PARA CONSTRUIR APK (después de subir cambios):
+   cd frontend
+   npx eas build --platform android --profile preview
+
+───────────────────────────────────────────────────────────────────
+
+✅ TU APP ESTÁ LISTA PARA SUBIR
+   Todos los problemas fueron arreglados
+   Lee CAMBIOS_Y_ARREGLOS.md para más detalles

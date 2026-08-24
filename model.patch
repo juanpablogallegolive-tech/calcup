@@ -1,0 +1,229 @@
+diff --git a/model.patch b/model.patch
+index 1fa4e63..e69de29 100644
+--- a/model.patch
++++ b/model.patch
+@@ -1,224 +0,0 @@
+-diff --git a/model.patch b/model.patch
+-index 0f70660..e69de29 100644
+---- a/model.patch
+-+++ b/model.patch
+-@@ -1,219 +0,0 @@
+--diff --git a/model.patch b/model.patch
+--index 0587035..e69de29 100644
+----- a/model.patch
+--+++ b/model.patch
+--@@ -1,214 +0,0 @@
+---diff --git a/model.patch b/model.patch
+---index 4f7cc3e..e69de29 100644
+------ a/model.patch
+---+++ b/model.patch
+---@@ -1,209 +0,0 @@
+----diff --git a/frontend/app/_layout.tsx b/frontend/app/_layout.tsx
+----index 94106f7..601d15d 100644
+------- a/frontend/app/_layout.tsx
+----+++ b/frontend/app/_layout.tsx
+----@@ -68,6 +68,15 @@ export default function TabLayout() {
+----             ),
+----           }}
+----         />
+----+        <Tabs.Screen
+----+          name="import-export"
+----+          options={{
+----+            title: 'Importar/Exportar',
+----+            tabBarIcon: ({ color, size }) => (
+----+              <MaterialCommunityIcons name="file-export" size={size} color={color} />
+----+            ),
+----+          }}
+----+        />
+----         <Tabs.Screen
+----           name="index"
+----           options={{
+----diff --git a/model.patch b/model.patch
+----index 85db185..e69de29 100644
+------- a/model.patch
+----+++ b/model.patch
+----@@ -1,184 +0,0 @@
+-----diff --git a/frontend/app/calculator.tsx b/frontend/app/calculator.tsx
+-----index aab4f36..7d4cdb5 100644
+-------- a/frontend/app/calculator.tsx
+-----+++ b/frontend/app/calculator.tsx
+-----@@ -495,12 +495,12 @@ export default function CalculatorScreen() {
+-----                   )}
+-----                 </TouchableOpacity>
+-----               )}
+------              ListEmptyComponent=(
+-----+              ListEmptyComponent={
+-----                 <View style={styles.emptyContainer}>
+-----                   <Text style={styles.emptyText}>No hay flujos creados.</Text>
+-----                   <Text style={styles.emptySubText}>Ve a la pestaña Flujos para crear uno.</Text>
+-----                 </View>
+------              )
+-----+              }
+-----             />
+-----           </View>
+-----         </View>
+-----diff --git a/model.patch b/model.patch
+-----index b9306b5..e69de29 100644
+-------- a/model.patch
+-----+++ b/model.patch
+-----@@ -1,160 +0,0 @@
+------diff --git a/frontend/app/quotes.tsx b/frontend/app/quotes.tsx
+------index 4aedc0a..bd91338 100644
+--------- a/frontend/app/quotes.tsx
+------+++ b/frontend/app/quotes.tsx
+------@@ -403,14 +403,30 @@ const styles = StyleSheet.create({
+------     marginBottom: 8,
+------   },
+------   resultsContainer: {
+-------    maxHeight: 150,
+------+    maxHeight: 200,
+------     backgroundColor: '#fff',
+-------    borderRadius: 4,
+------+    borderRadius: 8,
+------+    borderWidth: 1,
+------+    borderColor: '#e0e0e0',
+------     marginBottom: 8,
+------   },
+------+  resultsScroll: {
+------+    maxHeight: 200,
+------+  },
+------   resultItem: {
+------+    padding: 12,
+------     borderBottomWidth: 1,
+-------    borderBottomColor: '#eee',
+------+    borderBottomColor: '#f0f0f0',
+------+  },
+------+  resultTitle: {
+------+    fontSize: 14,
+------+    fontWeight: '500',
+------+    color: '#333',
+------+  },
+------+  resultPrice: {
+------+    fontSize: 12,
+------+    color: '#666',
+------+    marginTop: 4,
+------   },
+------   subtotalBox: {
+------     backgroundColor: '#e3f2fd',
+------diff --git a/model.patch b/model.patch
+------index 1cd22de..e69de29 100644
+--------- a/model.patch
+------+++ b/model.patch
+------@@ -1,117 +0,0 @@
+-------diff --git a/test_result.md b/test_result.md
+-------index 187cba4..dbb3d18 100644
+---------- a/test_result.md
+-------+++ b/test_result.md
+-------@@ -100,4 +100,109 @@
+------- 
+------- #====================================================================================================
+------- # Testing Data - Main Agent and testing sub agent both should log testing data below this section
+--------#====================================================================================================
+-------\ No newline at end of file
+-------+#====================================================================================================
+-------+
+-------+user_problem_statement: "Probar el backend de la aplicación de calculadora de precios móvil"
+-------+
+-------+backend:
+-------+  - task: "Productos API Endpoints"
+-------+    implemented: true
+-------+    working: true
+-------+    file: "backend/server.py"
+-------+    stuck_count: 0
+-------+    priority: "high"
+-------+    needs_retesting: false
+-------+    status_history:
+-------+        - working: true
+-------+          agent: "testing"
+-------+          comment: "✅ GET /api/productos working correctly - returns 4349 products total (default limit 100). Search endpoint working with 8 results for 'ABANICO' query."
+-------+
+-------+  - task: "Flujos API Endpoints"
+-------+    implemented: true
+-------+    working: true
+-------+    file: "backend/server.py"
+-------+    stuck_count: 0
+-------+    priority: "high"
+-------+    needs_retesting: false
+-------+    status_history:
+-------+        - working: true
+-------+          agent: "testing"
+-------+          comment: "✅ GET /api/flujos working correctly - found 1 flow 'Cálculo con IVA' with proper operations (IVA sumar porcentaje, Descuento mayorista restar porcentaje)."
+-------+
+-------+  - task: "Price Calculation API"
+-------+    implemented: true
+-------+    working: true
+-------+    file: "backend/server.py"
+-------+    stuck_count: 0
+-------+    priority: "high"
+-------+    needs_retesting: false
+-------+    status_history:
+-------+        - working: true
+-------+          agent: "testing"
+-------+          comment: "✅ POST /api/calcular working correctly - calculated price from 10000 base to 10710 after operations, then 12852 with 20% client margin. All calculations accurate."
+-------+
+-------+  - task: "Save Calculation API"
+-------+    implemented: true
+-------+    working: true
+-------+    file: "backend/server.py"
+-------+    stuck_count: 0
+-------+    priority: "high"
+-------+    needs_retesting: false
+-------+    status_history:
+-------+        - working: true
+-------+          agent: "testing"
+-------+          comment: "✅ POST /api/calculos working correctly - successfully saved calculation with ID 69b471d1d42e32a0b0cce997."
+-------+
+-------+  - task: "Cotizaciones API"
+-------+    implemented: true
+-------+    working: true
+-------+    file: "backend/server.py"
+-------+    stuck_count: 0
+-------+    priority: "high"
+-------+    needs_retesting: false
+-------+    status_history:
+-------+        - working: true
+-------+          agent: "testing"
+-------+          comment: "✅ POST /api/cotizaciones working correctly - successfully created quotation with ID 69b471d2d42e32a0b0cce998."
+-------+
+-------+  - task: "Database Connection"
+-------+    implemented: true
+-------+    working: true
+-------+    file: "backend/server.py"
+-------+    stuck_count: 0
+-------+    priority: "high"
+-------+    needs_retesting: false
+-------+    status_history:
+-------+        - working: true
+-------+          agent: "testing"
+-------+          comment: "✅ MongoDB connection working - health check returns 'connected' status."
+-------+
+-------+frontend:
+-------+  - task: "Frontend Testing"
+-------+    implemented: false
+-------+    working: "NA"
+-------+    file: "N/A"
+-------+    stuck_count: 0
+-------+    priority: "low"
+-------+    needs_retesting: false
+-------+    status_history:
+-------+        - working: "NA"
+-------+          agent: "testing"
+-------+          comment: "Frontend testing not performed as per testing agent guidelines - only backend testing requested."
+-------+
+-------+metadata:
+-------+  created_by: "testing_agent"
+-------+  version: "1.0"
+-------+  test_sequence: 1
+-------+  run_ui: false
+-------+
+-------+test_plan:
+-------+  current_focus:
+-------+    - "All backend endpoints tested and working"
+-------+  stuck_tasks: []
+-------+  test_all: false
+-------+  test_priority: "high_first"
+-------+
+-------+agent_communication:
+-------+    - agent: "testing"
+-------+      message: "Completed comprehensive backend testing. All 7 test categories passed: health check, productos endpoints, flujos endpoints, price calculation, save calculation, and cotizaciones. Backend is fully functional with 4349 products loaded and proper flow configuration."
+-------\ No newline at end of file
