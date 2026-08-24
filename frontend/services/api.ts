@@ -11,11 +11,26 @@ const BACKEND_URL = (
 
 const api = axios.create({
   baseURL: `${BACKEND_URL}/api`,
-  timeout: 30000,
+  timeout: 45000,
   headers: {
     'Content-Type': 'application/json',
   },
 });
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const code = error?.code;
+    const status = error?.response?.status;
+    if (!error.response || code === 'ECONNABORTED' || code === 'ERR_NETWORK') {
+      error.userMessage =
+        'No se pudo conectar con el servidor (Render). Si el servicio está en plan free, puede tardar ~1 min en despertar. Revisa EXPO_PUBLIC_BACKEND_URL y que el backend esté vivo.';
+    } else if (status >= 500) {
+      error.userMessage = 'El servidor de Render respondió con error. Revisa logs y MONGO_URL.';
+    }
+    return Promise.reject(error);
+  }
+);
 
 // Productos
 export const productosApi = {

@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: calcup-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: DB_NAME
+        value: calculadora_precios
+      - key: MONGO_URL
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.11.9"

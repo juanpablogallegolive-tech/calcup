@@ -22,10 +22,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MongoDB - CORREGIDO: Lee DB_NAME del environment
+# MongoDB: no bloquear el arranque si Atlas/Render aún no responde.
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
-client = MongoClient(MONGO_URL)
 DB_NAME = os.getenv("DB_NAME", "calculadora_precios")
+client = MongoClient(
+    MONGO_URL,
+    serverSelectionTimeoutMS=8000,
+    connectTimeoutMS=8000,
+    socketTimeoutMS=20000,
+)
 db = client[DB_NAME]
 
 # Colecciones
@@ -34,6 +39,15 @@ flujos_col = db["flujos"]
 calculos_col = db["calculos"]
 cotizaciones_col = db["cotizaciones"]
 aprendizajes_col = db["aprendizajes"]  # Para aprendizaje de IA
+
+
+def mongo_ok() -> bool:
+    try:
+        client.admin.command("ping")
+        return True
+    except Exception as e:
+        print(f"⚠️ MongoDB no disponible: {e}")
+        return False
 
 # ==================== MODELS ====================
 
@@ -1538,11 +1552,20 @@ def eliminar_multiples_productos(request: BorrarMultiplesRequest):
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "database": DB_NAME}
+    connected = mongo_ok()
+    return {
+        "status": "ok" if connected else "degraded",
+        "database": DB_NAME,
+        "mongo": "connected" if connected else "disconnected",
+        "service": "calcup-api",
+    }
 
-# Cargar sinónimos dinámicos al iniciar el servidor
+# Cargar sinónimos dinámicos al iniciar el servidor (sin tumbar el proceso)
 try:
-    extraer_sinonimos_dinamicos()
+    if mongo_ok():
+        extraer_sinonimos_dinamicos()
+    else:
+        print("⚠️ Arranque sin MongoDB: revisa MONGO_URL en Render.")
 except Exception as e:
     print(f"⚠️ No se pudieron cargar sinónimos dinámicos en el arranque: {e}")
 
