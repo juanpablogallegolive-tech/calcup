@@ -1,3 +1,12 @@
+# 🔧 Solución: Error de Conexión con Render / MongoDB
+
+## Estado del servicio anterior
+
+La URL `https://npm-install-g-eas-cli.onrender.com` **no responde** (SSL / servicio caído o mal nombrado).  
+Vuelve a desplegar este repo en Render usando `render.yaml` (servicio `calcup-api`) y actualiza `EXPO_PUBLIC_BACKEND_URL` a la URL nueva.
+
+---
+
 # 🔧 Solución: Error de Conexión MongoDB en Render
 
 ## ❌ Error Actual
