@@ -27,13 +27,20 @@ export const setBackendUrl = (newUrl: string) => {
 export const checkServerHealth = async (customUrl?: string): Promise<{ ok: boolean; message: string }> => {
   const targetUrl = customUrl ? customUrl.trim().replace(/\/$/, '') : currentBackendUrl;
   try {
-    const res = await axios.get(`${targetUrl}/api/health`, { timeout: 5000 });
+    const res = await axios.get(`${targetUrl}/api/health`, { timeout: 4000 });
     if (res.status === 200) {
-      return { ok: true, message: 'Servidor en línea (' + (res.data?.mongo || 'OK') + ')' };
+      return { ok: true, message: 'Servidor en línea (MongoDB: ' + (res.data?.mongo || 'Conectado') + ')' };
     }
     return { ok: false, message: 'Servidor respondió con código ' + res.status };
-  } catch (err: any) {
-    return { ok: false, message: err?.message || 'Sin conexión con el servidor' };
+  } catch (firstErr: any) {
+    // Si la primera respuesta rápida falla por frío (cold start), reintentar dando tiempo a Render para despertar
+    try {
+      const resRetry = await axios.get(`${targetUrl}/api/health`, { timeout: 25000 });
+      if (resRetry.status === 200) {
+        return { ok: true, message: 'Servidor despertó y está en línea (MongoDB: ' + (resRetry.data?.mongo || 'Conectado') + ')' };
+      }
+    } catch {}
+    return { ok: false, message: 'Servidor inactivo o sin conexión' };
   }
 };
 
