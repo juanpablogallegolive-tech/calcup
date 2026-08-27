@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: npm-install--g-eas-cli
+    name: calcup-api
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt

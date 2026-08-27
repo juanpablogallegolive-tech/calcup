@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import {
   View,
   ScrollView,
@@ -18,8 +18,9 @@ import {
   Divider,
   TextInput,
   Searchbar,
+  ProgressBar,
 } from 'react-native-paper';
-import { matchProductos, guardarAprendizaje } from '../services/api';
+import { matchProductoIndividual, guardarAprendizaje } from '../services/api';
 import { smartSearch } from '../services/smartSearch';
 import { Producto } from '../types/types';
 import { useDebouncedCallback } from '../hooks/useDebounce';
@@ -32,7 +33,8 @@ interface ProductoMatch {
   sospechoso: boolean;
   aprendido?: boolean;
   modificado?: boolean;
-  noEncontrado?: boolean; // Cuando falla la búsqueda
+  noEncontrado?: boolean;
+  analizando?: boolean; // Para spinner individual
 }
 
 interface Props {
@@ -41,57 +43,83 @@ interface Props {
   visible: boolean;
 }
 
-const MAX_PRODUCTOS_POR_LOTE = 120;
-
 export default function LectorTexto({ onProductosSeleccionados, onClose, visible }: Props) {
-  const [step, setStep] = useState<'input' | 'edit' | 'match' | 'result'>('input');
+  const [step, setStep] = useState<'input' | 'edit' | 'result'>('input');
   const [textoCapturado, setTextoCapturado] = useState('');
   const [lineasTexto, setLineasTexto] = useState<string[]>([]);
   const [matches, setMatches] = useState<ProductoMatch[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [reintentando, setReintentando] = useState(false);
-  const [progresoReintento, setProgresoReintento] = useState({ actual: 0, total: 0 });
-  const detenerReintentoRef = useRef(false);
   
+  // Cola de procesamiento asíncrona
+  const [colaProcesando, setColaProcesando] = useState(false);
+  const [colaPausada, setColaPausada] = useState(false);
+  const [progresoCola, setProgresoCola] = useState({ actual: 0, total: 0, nombreActual: '' });
+  
+  const detenerColaRef = useRef(false);
+  const pausarColaRef = useRef(false);
+
   // Para cambiar producto
   const [editandoIndex, setEditandoIndex] = useState<number | null>(null);
   const [busquedaProducto, setBusquedaProducto] = useState('');
   const [resultadosBusqueda, setResultadosBusqueda] = useState<Producto[]>([]);
 
+  // Limpieza al cerrar
+  useEffect(() => {
+    if (!visible) {
+      detenerCola();
+    }
+  }, [visible]);
+
+  const detenerCola = () => {
+    detenerColaRef.current = true;
+    pausarColaRef.current = false;
+    setColaProcesando(false);
+    setColaPausada(false);
+  };
+
+  const pausarOReanudarCola = () => {
+    if (colaPausada) {
+      pausarColaRef.current = false;
+      setColaPausada(false);
+    } else {
+      pausarColaRef.current = true;
+      setColaPausada(true);
+    }
+  };
+
   const resetear = () => {
+    detenerCola();
     setStep('input');
     setTextoCapturado('');
     setLineasTexto([]);
     setMatches([]);
-    setReintentando(false);
-    setProgresoReintento({ actual: 0, total: 0 });
-    detenerReintentoRef.current = false;
+    setProgresoCola({ actual: 0, total: 0, nombreActual: '' });
     setEditandoIndex(null);
     setBusquedaProducto('');
     setResultadosBusqueda([]);
   };
 
   const cerrarLector = () => {
-    detenerReintentoRef.current = true;
-    setReintentando(false);
+    detenerCola();
     onClose();
   };
 
-  // Búsqueda interna debounced usando smartSearch (local, rápida, con aprendizajes)
+  // Helper para ceder ejecución al event loop de React Native (0 congelamiento de UI)
+  const cederEventLoop = (ms: number = 10) => new Promise(resolve => setTimeout(resolve, ms));
+
+  // Búsqueda interna debounced para cambiar producto manualmente
   const ejecutarBusqueda = useDebouncedCallback(async (query: string) => {
-    if (query.length >= 1) {
+    if (query.trim().length >= 1) {
       try {
         const resultados = await smartSearch.buscar(query, 20);
         setResultadosBusqueda(resultados);
       } catch (error) {
-        console.error('Error buscando:', error);
+        console.error('Error buscando producto manual:', error);
       }
     } else {
       setResultadosBusqueda([]);
     }
-  }, 250);
+  }, 200);
 
-  // Buscar productos para cambiar (con debounce + smartSearch)
   const buscarProductoParaCambiar = (query: string) => {
     setBusquedaProducto(query);
     ejecutarBusqueda(query);
@@ -100,13 +128,12 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
   // Cambiar producto manualmente y guardar aprendizaje
   const cambiarProducto = async (index: number, nuevoProducto: Producto) => {
     const match = matches[index];
-    
-    // Registrar aprendizaje local inmediatamente (para búsquedas subsiguientes)
+    if (!match) return;
+
     smartSearch.registrarAprendizajeLocal(
       match.nombre_original, nuevoProducto._id, nuevoProducto.nombre
     );
-    
-    // Guardar aprendizaje en el backend (persistencia)
+
     try {
       await guardarAprendizaje({
         nombre_original: match.nombre_original,
@@ -114,41 +141,39 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
         nombre_producto_correcto: nuevoProducto.nombre,
       });
     } catch (error) {
-      console.error('Error guardando aprendizaje:', error);
+      console.error('Error guardando aprendizaje en servidor:', error);
     }
-    
-    // Actualizar el match
-    const nuevosMatches = [...matches];
-    nuevosMatches[index] = {
-      ...match,
-      producto_sugerido: nuevoProducto,
-      nombre_editado: nuevoProducto.nombre,
-      score: 1.0,
-      sospechoso: false,
-      aprendido: true,
-      modificado: true,
-    };
-    setMatches(nuevosMatches);
-    
-    // Cerrar búsqueda
+
+    setMatches(prev => {
+      const copy = [...prev];
+      copy[index] = {
+        ...match,
+        producto_sugerido: nuevoProducto,
+        nombre_editado: nuevoProducto.nombre,
+        score: 1.0,
+        sospechoso: false,
+        aprendido: true,
+        modificado: true,
+        analizando: false,
+        noEncontrado: false,
+      };
+      return copy;
+    });
+
     setEditandoIndex(null);
     setBusquedaProducto('');
     setResultadosBusqueda([]);
-    
-    Alert.alert('✓ Aprendizaje guardado', `La IA recordará que "${match.nombre_original}" = "${nuevoProducto.nombre}"`);
   };
 
-  // Confirmar que la sugerencia es correcta (también aprende)
+  // Confirmar sugerencia del analizador
   const confirmarSugerencia = async (index: number) => {
     const match = matches[index];
-    if (!match.producto_sugerido) return;
-    
-    // Registrar aprendizaje local inmediatamente
+    if (!match || !match.producto_sugerido) return;
+
     smartSearch.registrarAprendizajeLocal(
       match.nombre_original, match.producto_sugerido._id, match.producto_sugerido.nombre
     );
-    
-    // Guardar aprendizaje en backend para reforzar
+
     try {
       await guardarAprendizaje({
         nombre_original: match.nombre_original,
@@ -156,237 +181,177 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
         nombre_producto_correcto: match.producto_sugerido.nombre,
       });
     } catch (error) {
-      console.error('Error guardando aprendizaje:', error);
+      console.error('Error confirmando aprendizaje en servidor:', error);
     }
-    
-    // Actualizar el match
-    const nuevosMatches = [...matches];
-    nuevosMatches[index] = {
-      ...match,
-      sospechoso: false,
-      aprendido: true,
-    };
-    setMatches(nuevosMatches);
-    
-    Alert.alert('✓ Confirmado', 'La IA recordará esta asociación');
+
+    setMatches(prev => {
+      const copy = [...prev];
+      copy[index] = {
+        ...match,
+        sospechoso: false,
+        aprendido: true,
+      };
+      return copy;
+    });
   };
 
-  // Saltar/omitir un producto
   const saltarProducto = (index: number) => {
-    const nuevosMatches = [...matches];
-    nuevosMatches[index] = {
-      ...nuevosMatches[index],
-      producto_sugerido: null,
-      sospechoso: false,
-    };
-    setMatches(nuevosMatches);
+    setMatches(prev => {
+      const copy = [...prev];
+      copy[index] = {
+        ...copy[index],
+        producto_sugerido: null,
+        sospechoso: false,
+        noEncontrado: true,
+        analizando: false,
+      };
+      return copy;
+    });
     setEditandoIndex(null);
     setBusquedaProducto('');
     setResultadosBusqueda([]);
   };
 
-  const esperar = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-  const construirVariantesReintento = (texto: string): string[] => {
-    const base = (texto || '').trim();
-    if (!base) return [];
-
-    const variantes = new Set<string>();
-    variantes.add(base);
-
-    const sinPuntuacion = base.replace(/[|,;]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
-    if (sinPuntuacion) variantes.add(sinPuntuacion);
-
-    const sinDuplicados = base
-      .replace(/([a-zA-Z])\1{2,}/g, '$1$1')
-      .replace(/\s{2,}/g, ' ')
-      .trim();
-    if (sinDuplicados) variantes.add(sinDuplicados);
-
-    const corregidoOCR = base
-      .replace(/\b0\s*([oO])\b/g, '0')
-      .replace(/([0-9])[oO]/g, '$10')
-      .replace(/[lI](?=[0-9])/g, '1')
-      .replace(/\s{2,}/g, ' ')
-      .trim();
-    if (corregidoOCR) variantes.add(corregidoOCR);
-
-    return Array.from(variantes).filter(v => v.length > 1).slice(0, 5);
-  };
-
-  const detenerReintentos = () => {
-    detenerReintentoRef.current = true;
-  };
-
-  const iniciarEdicionManual = (index: number) => {
-    detenerReintentoRef.current = true;
-    setReintentando(false);
-    setEditandoIndex(index);
-  };
-
-  const reintentarSospechosos = async () => {
-    if (reintentando) return;
-
-    const indicesSospechosos = matches
-      .map((m, i) => ({ m, i }))
-      .filter(({ m }) => m.sospechoso)
-      .map(({ i }) => i);
-
-    if (indicesSospechosos.length === 0) return;
-
-    setReintentando(true);
-    detenerReintentoRef.current = false;
-    setProgresoReintento({ actual: 0, total: indicesSospechosos.length });
-
-    const nuevosMatches = [...matches];
-
-    try {
-      for (let p = 0; p < indicesSospechosos.length; p++) {
-        if (detenerReintentoRef.current) break;
-
-        const index = indicesSospechosos[p];
-        const actual = nuevosMatches[index];
-        if (!actual || !actual.sospechoso) {
-          setProgresoReintento({ actual: p + 1, total: indicesSospechosos.length });
-          continue;
-        }
-
-        const baseBusqueda = actual.nombre_editado || actual.nombre_original;
-        const variantes = construirVariantesReintento(baseBusqueda);
-        let mejorProducto = actual.producto_sugerido;
-        let mejorScore = actual.score || 0;
-
-        for (let intento = 0; intento < Math.min(4, variantes.length); intento++) {
-          if (detenerReintentoRef.current) break;
-
-          const query = variantes[intento];
-          const candidatos = await smartSearch.buscar(query, 8);
-          if (!candidatos || candidatos.length === 0) {
-            await esperar(250);
-            continue;
-          }
-
-          const candidato = candidatos.find(c => c._id !== mejorProducto?._id) || candidatos[0];
-          const bono = Math.max(0.02, 0.08 - intento * 0.015);
-          const scoreEstimado = Math.min(0.84, Math.max(mejorScore, 0.54 + bono));
-
-          if (!mejorProducto || candidato._id !== mejorProducto._id || scoreEstimado > mejorScore) {
-            mejorProducto = candidato;
-            mejorScore = scoreEstimado;
-
-            nuevosMatches[index] = {
-              ...actual,
-              producto_sugerido: candidato,
-              nombre_editado: candidato.nombre,
-              score: scoreEstimado,
-              sospechoso: scoreEstimado < 0.70,
-              modificado: true,
-            };
-            setMatches([...nuevosMatches]);
-          }
-
-          await esperar(280);
-        }
-
-        setProgresoReintento({ actual: p + 1, total: indicesSospechosos.length });
-        await esperar(260);
-      }
-    } catch (error) {
-      console.error('Error en reintentos automáticos:', error);
-    } finally {
-      setReintentando(false);
-      detenerReintentoRef.current = false;
-    }
-  };
-
-  // Procesar texto en líneas (nombres de productos)
+  // 1. Capacidad Masiva: Procesar texto de entrada sin límite
   const procesarTexto = () => {
     if (!textoCapturado.trim()) {
-      Alert.alert('Error', 'Ingresa texto primero');
+      Alert.alert('Atención', 'Por favor ingresa o pega el texto de los productos');
       return;
     }
-    
-    // Separar por líneas o separadores comunes y limpiar prefijos
+
+    // Separar por saltos de línea, comas, punto y coma o tuberías (|)
     const lineas = textoCapturado
       .split(/\n|;|\||,/)
-      .map(l => l.replace(/^[\s\-\*\•\>]+/, '')) // Quitar viñetas como "-", "*", "•", ">"
-      .map(l => l.replace(/^[0-9]+[\.\)\-]\s+/, '')) // Quitar listas numeradas como "1. ", "2) ", "3 - "
+      .map(l => l.replace(/^[\s\-\*\•\>\–\—]+/, '')) // Quitar viñetas
+      .map(l => l.replace(/^[0-9]+[\.\)\-]\s+/, '')) // Quitar números de lista
       .map(l => l.replace(/\s{2,}/g, ' '))
       .map(l => l.trim())
-      .filter(l => l.length > 2); // Ignorar líneas muy cortas
-    
+      .filter(l => l.length >= 2); // Filtro básico de ruido
+
     if (lineas.length === 0) {
-      Alert.alert('Error', 'No se encontraron productos en el texto');
+      Alert.alert('Sin productos', 'No se pudieron extraer nombres válidos de productos del texto');
       return;
     }
-    
+
     setLineasTexto(lineas);
     setStep('edit');
   };
 
-  // Editar línea individual
   const editarLinea = (index: number, valor: string) => {
     const nuevas = [...lineasTexto];
     nuevas[index] = valor;
     setLineasTexto(nuevas);
   };
 
-  // Eliminar línea
   const eliminarLinea = (index: number) => {
     setLineasTexto(lineasTexto.filter((_, i) => i !== index));
   };
 
-  // Buscar matches con IA (en lotes para soportar grandes cantidades sin timeout)
-  const buscarMatches = async () => {
-    if (lineasTexto.length === 0) {
-      Alert.alert('Error', 'No hay productos para buscar');
+  const agregarNuevaLinea = () => {
+    setLineasTexto([...lineasTexto, 'Nuevo Producto']);
+  };
+
+  // 2. Cola de Procesamiento Asíncrona (Queue) Uno por Uno
+  const iniciarColaAnalisis = async (lineasAProcesar: string[] = lineasTexto) => {
+    if (lineasAProcesar.length === 0) {
+      Alert.alert('Atención', 'No hay productos para analizar');
       return;
     }
 
-    setLoading(true);
-    setStep('match');
+    detenerColaRef.current = false;
+    pausarColaRef.current = false;
+    setColaProcesando(true);
+    setColaPausada(false);
+    setStep('result');
 
-    try {
-      const resultadosAcumulados: ProductoMatch[] = [];
+    // Inicializar lista de matches con placeholders pendientes
+    const iniciales: ProductoMatch[] = lineasAProcesar.map(l => ({
+      nombre_original: l,
+      nombre_editado: l,
+      producto_sugerido: null,
+      score: 0,
+      sospechoso: true,
+      analizando: true,
+    }));
+    setMatches(iniciales);
 
-      for (let i = 0; i < lineasTexto.length; i += MAX_PRODUCTOS_POR_LOTE) {
-        const lote = lineasTexto.slice(i, i + MAX_PRODUCTOS_POR_LOTE);
-        const response = await matchProductos(lote);
+    for (let i = 0; i < lineasAProcesar.length; i++) {
+      if (detenerColaRef.current) break;
 
-        const resultadosLote: ProductoMatch[] = response.data.map((r: any, idx: number) => ({
-          nombre_original: lote[idx],
-          nombre_editado: r.producto_sugerido?.nombre || lote[idx],
-          producto_sugerido: r.producto_sugerido,
-          score: r.score,
-          sospechoso: r.sospechoso,
-          aprendido: r.aprendido || false,
-        }));
+      // Soporte para Pausar / Reanudar la cola
+      while (pausarColaRef.current) {
+        await cederEventLoop(150);
+        if (detenerColaRef.current) break;
+      }
+      if (detenerColaRef.current) break;
 
-        resultadosAcumulados.push(...resultadosLote);
+      const nombreItem = lineasAProcesar[i];
+      setProgresoCola({
+        actual: i + 1,
+        total: lineasAProcesar.length,
+        nombreActual: nombreItem,
+      });
+
+      // Paso A: Análisis difuso local rápido (smartSearch)
+      let resultadoMatch = await smartSearch.analizarProducto(nombreItem);
+
+      // Paso B: Si la confianza local es baja o no lo halló, consultar backend de forma aislada
+      if (!resultadoMatch.producto_sugerido || resultadoMatch.score < 0.42) {
+        try {
+          const resApi = await matchProductoIndividual(nombreItem);
+          if (resApi.data && resApi.data.producto_sugerido) {
+            resultadoMatch = {
+              nombre_original: nombreItem,
+              producto_sugerido: resApi.data.producto_sugerido,
+              score: resApi.data.score || 0.82,
+              sospechoso: resApi.data.sospechoso || false,
+              aprendido: resApi.data.aprendido || false,
+            };
+          }
+        } catch (e) {
+          // La falla de red/servidor en un solo ítem NO tumba el resto de la cola
+          console.warn(`[LectorTexto Queue] Caída aislada de backend para '${nombreItem}':`, e);
+        }
       }
 
-      setMatches(resultadosAcumulados);
-      setStep('result');
-    } catch (error) {
-      console.error('Error buscando matches:', error);
-      // NO MOSTRAR ERROR - crear matches vacíos para que el usuario los corrija manualmente
-      const resultadosVacios: ProductoMatch[] = lineasTexto.map((linea) => ({
-        nombre_original: linea,
-        nombre_editado: linea,
-        producto_sugerido: null,
-        score: 0,
-        sospechoso: true,
-        aprendido: false,
-        noEncontrado: true, // Marcador especial
-      }));
-      setMatches(resultadosVacios);
-      setStep('result');
-    } finally {
-      setLoading(false);
+      // Actualización inmediata del estado para el ítem actual en la interfaz de usuario
+      setMatches(prev => {
+        const copy = [...prev];
+        copy[i] = {
+          nombre_original: nombreItem,
+          nombre_editado: resultadoMatch.producto_sugerido?.nombre || nombreItem,
+          producto_sugerido: resultadoMatch.producto_sugerido,
+          score: resultadoMatch.score,
+          sospechoso: resultadoMatch.sospechoso,
+          aprendido: resultadoMatch.aprendido || false,
+          analizando: false,
+          noEncontrado: !resultadoMatch.producto_sugerido,
+        };
+        return copy;
+      });
+
+      // Ceder voluntariamente el event loop para asegurar fluido total de UI (60 FPS)
+      await cederEventLoop(15);
     }
+
+    setColaProcesando(false);
+    setColaPausada(false);
   };
 
-  // Confirmar selección
+  // Reintentar solo productos dudosos o no encontrados en cola
+  const reintentarDudosos = () => {
+    const dudosos = matches
+      .filter(m => m.sospechoso || !m.producto_sugerido)
+      .map(m => m.nombre_original);
+
+    if (dudosos.length === 0) {
+      Alert.alert('Información', 'No hay productos dudosos para reintentar');
+      return;
+    }
+
+    iniciarColaAnalisis(dudosos);
+  };
+
   const confirmarSeleccion = () => {
     const productosValidos = matches
       .filter(m => m.producto_sugerido)
@@ -396,7 +361,7 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
       }));
 
     if (productosValidos.length === 0) {
-      Alert.alert('Error', 'No hay productos válidos para agregar');
+      Alert.alert('Sin selección', 'Debes seleccionar o confirmar al menos un producto válido');
       return;
     }
 
@@ -405,7 +370,9 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
     cerrarLector();
   };
 
-  const totalSospechosos = matches.filter(m => m.sospechoso).length;
+  const totalEncontrados = matches.filter(m => m.producto_sugerido && !m.sospechoso).length;
+  const totalDudosos = matches.filter(m => m.producto_sugerido && m.sospechoso).length;
+  const totalNoEncontrados = matches.filter(m => !m.producto_sugerido && !m.analizando).length;
 
   if (!visible) return null;
 
@@ -414,23 +381,24 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
       <View style={styles.container}>
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>Lector de Productos</Text>
-          <IconButton icon="close" onPress={cerrarLector} />
+          <Text style={styles.headerTitle}>Escáner y Lector Masivo</Text>
+          <IconButton icon="close" iconColor="#fff" onPress={cerrarLector} />
         </View>
 
         <ScrollView style={styles.content} keyboardShouldPersistTaps="handled">
-          {/* Entrada de texto */}
+          {/* PASO 1: Entrada de texto sin límites */}
           {step === 'input' && (
             <Card style={styles.card}>
               <Card.Content>
-                <Text style={styles.stepTitle}>Ingresa los nombres de productos</Text>
-                <Text style={styles.hint}>Puedes pegar por líneas, comas, punto y coma o |</Text>
-                
+                <Text style={styles.stepTitle}>Pega tu Lista de Productos</Text>
+                <Text style={styles.hint}>
+                  Capacidad ilimitada. Puedes pegar listas por saltos de línea, comas, guiones o barras.
+                </Text>
+
                 <RNTextInput
                   style={styles.textArea}
                   multiline
-                  numberOfLines={10}
-                  placeholder="Tornillo hexagonal 1/4&#10;Tuerca galvanizada M8&#10;Arandela plana 3/8..."
+                  placeholder="Tornillo hexagonal 1/4&#10;Tuerca galvanizada M8&#10;Arandela plana 3/8&#10;Tubo PVC 1/2 pulgada&#10;Codo galvanizado 3/4..."
                   value={textoCapturado}
                   onChangeText={setTextoCapturado}
                   textAlignVertical="top"
@@ -438,18 +406,25 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
 
                 <View style={styles.buttonRow}>
                   <Button mode="outlined" onPress={cerrarLector}>Cancelar</Button>
-                  <Button mode="contained" onPress={procesarTexto}>Siguiente</Button>
+                  <Button mode="contained" onPress={procesarTexto}>
+                    Procesar Lista
+                  </Button>
                 </View>
               </Card.Content>
             </Card>
           )}
 
-          {/* PASO 2: Editar líneas */}
+          {/* PASO 2: Revisar / Editar líneas */}
           {step === 'edit' && (
             <Card style={styles.card}>
               <Card.Content>
-                <Text style={styles.stepTitle}>Revisa los productos ({lineasTexto.length})</Text>
-                <Text style={styles.hint}>Edita o elimina antes de buscar</Text>
+                <View style={styles.stepHeaderRow}>
+                  <Text style={styles.stepTitle}>Revisar Productos ({lineasTexto.length})</Text>
+                  <Button mode="text" compact onPress={agregarNuevaLinea} icon="plus">
+                    Agregar Ítem
+                  </Button>
+                </View>
+                <Text style={styles.hint}>Edita o ajusta los nombres antes de iniciar la cola de análisis.</Text>
 
                 {lineasTexto.map((linea, index) => (
                   <View key={index} style={styles.lineaRow}>
@@ -460,7 +435,12 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
                       style={styles.lineaInput}
                       dense
                     />
-                    <IconButton icon="delete" size={20} iconColor="#d32f2f" onPress={() => eliminarLinea(index)} />
+                    <IconButton
+                      icon="delete-outline"
+                      size={20}
+                      iconColor="#d32f2f"
+                      onPress={() => eliminarLinea(index)}
+                    />
                   </View>
                 ))}
 
@@ -468,78 +448,121 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
 
                 <View style={styles.buttonRow}>
                   <Button mode="outlined" onPress={() => setStep('input')}>Atrás</Button>
-                  <Button mode="contained" onPress={buscarMatches} loading={loading}>
-                    Buscar Similares
+                  <Button
+                    mode="contained"
+                    onPress={() => iniciarColaAnalisis(lineasTexto)}
+                    icon="play"
+                  >
+                    Iniciar Análisis en Cola
                   </Button>
                 </View>
               </Card.Content>
             </Card>
           )}
 
-          {/* PASO 3: Loading */}
-          {step === 'match' && loading && (
-            <Card style={styles.card}>
-              <Card.Content style={styles.loadingContainer}>
-                <ActivityIndicator size="large" />
-                <Text style={styles.loadingText}>Analizando {lineasTexto.length} productos...</Text>
-              </Card.Content>
-            </Card>
-          )}
-
-          {/* PASO 4: Resultados */}
+          {/* PASO 3: Resultados en tiempo real con cola asíncrona */}
           {step === 'result' && (
             <Card style={styles.card}>
               <Card.Content>
-                <Text style={styles.stepTitle}>Productos encontrados</Text>
-                <Text style={styles.hint}>La IA aprende de cada corrección que hagas</Text>
-
-                {totalSospechosos > 0 && (
-                  <View style={styles.reintentoPanel}>
-                    <Text style={styles.reintentoTexto}>
-                      {reintentando
-                        ? `Reintentando ${progresoReintento.actual}/${progresoReintento.total} productos dudosos...`
-                        : `Hay ${totalSospechosos} productos con duda. Puedes reintentar automático o corregir manualmente.`}
+                {/* Banner de progreso de la Cola */}
+                {colaProcesando && (
+                  <View style={styles.progressBanner}>
+                    <View style={styles.progressHeader}>
+                      <ActivityIndicator size="small" color="#6200ee" />
+                      <Text style={styles.progressText}>
+                        Analizando {progresoCola.actual} de {progresoCola.total}
+                      </Text>
+                      <Text style={styles.progressPercent}>
+                        {Math.round((progresoCola.actual / (progresoCola.total || 1)) * 100)}%
+                      </Text>
+                    </View>
+                    <ProgressBar
+                      progress={progresoCola.total > 0 ? progresoCola.actual / progresoCola.total : 0}
+                      color="#6200ee"
+                      style={styles.progressBar}
+                    />
+                    <Text style={styles.currentNameText} numberOfLines={1}>
+                      Buscando: “{progresoCola.nombreActual}”
                     </Text>
-                    {!reintentando ? (
-                      <Button
-                        mode="contained-tonal"
-                        onPress={reintentarSospechosos}
-                        icon="refresh"
-                      >
-                        Reintentar solo dudosos
-                      </Button>
-                    ) : (
+
+                    <View style={styles.queueControls}>
                       <Button
                         mode="outlined"
-                        onPress={detenerReintentos}
+                        compact
+                        onPress={pausarOReanudarCola}
+                        icon={colaPausada ? 'play' : 'pause'}
+                      >
+                        {colaPausada ? 'Reanudar' : 'Pausar'}
+                      </Button>
+                      <Button
+                        mode="outlined"
+                        compact
+                        onPress={detenerCola}
                         icon="stop"
                         textColor="#d32f2f"
                       >
-                        Detener reintento
+                        Detener
                       </Button>
+                    </View>
+                  </View>
+                )}
+
+                {/* Resumen de estadísticas */}
+                {!colaProcesando && matches.length > 0 && (
+                  <View style={styles.summaryBox}>
+                    <View style={styles.summaryBadgeGood}>
+                      <Text style={styles.badgeTextGood}>✓ {totalEncontrados} Listos</Text>
+                    </View>
+                    {totalDudosos > 0 && (
+                      <View style={styles.summaryBadgeWarning}>
+                        <Text style={styles.badgeTextWarning}>🤔 {totalDudosos} Dudosos</Text>
+                      </View>
+                    )}
+                    {totalNoEncontrados > 0 && (
+                      <View style={styles.summaryBadgeBad}>
+                        <Text style={styles.badgeTextBad}>❌ {totalNoEncontrados} No hallados</Text>
+                      </View>
                     )}
                   </View>
                 )}
 
+                {totalDudosos > 0 && !colaProcesando && (
+                  <Button
+                    mode="contained-tonal"
+                    onPress={reintentarDudosos}
+                    icon="refresh"
+                    style={{ marginBottom: 12 }}
+                  >
+                    Reintentar ({totalDudosos}) Dudosos
+                  </Button>
+                )}
+
+                {/* Lista de Resultados de Productos */}
                 {matches.map((match, index) => (
-                  <View 
-                    key={index} 
+                  <View
+                    key={index}
                     style={[
                       styles.matchCard,
+                      match.analizando && styles.matchAnalizando,
                       match.sospechoso && !match.producto_sugerido && styles.matchNoEntendido,
                       match.sospechoso && match.producto_sugerido && styles.matchSospechoso,
                       match.aprendido && styles.matchAprendido,
-                      match.modificado && styles.matchModificado
+                      match.modificado && styles.matchModificado,
                     ]}
                   >
-                    <Text style={styles.matchOriginal}>Buscaste: {`“${match.nombre_original}”`}</Text>
-                    
-                    {editandoIndex === index ? (
-                      // Modo edición: buscar otro producto
+                    <Text style={styles.matchOriginal}>Buscaste: “{match.nombre_original}”</Text>
+
+                    {match.analizando ? (
+                      <View style={styles.loadingRow}>
+                        <ActivityIndicator size="small" color="#6200ee" />
+                        <Text style={styles.loadingRowText}>Analizando coincidencia difusa...</Text>
+                      </View>
+                    ) : editandoIndex === index ? (
+                      /* Modo Edición / Búsqueda Manual */
                       <View style={styles.editarContainer}>
-                        <Text style={styles.editarTitulo}>Busca el producto correcto:</Text>
+                        <Text style={styles.editarTitulo}>Buscar producto correcto:</Text>
                         <Searchbar
-                          placeholder="Escribe para buscar..."
+                          placeholder="Escribe para buscar en el catálogo..."
                           onChangeText={buscarProductoParaCambiar}
                           value={busquedaProducto}
                           style={styles.searchbarEdit}
@@ -551,12 +574,16 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
                               data={resultadosBusqueda}
                               keyExtractor={(item) => item._id}
                               renderItem={({ item }) => (
-                                <TouchableOpacity 
+                                <TouchableOpacity
                                   style={styles.resultadoItem}
                                   onPress={() => cambiarProducto(index, item)}
                                 >
-                                  <Text style={styles.resultadoNombre} numberOfLines={2}>{item.nombre}</Text>
-                                  <Text style={styles.resultadoPrecio}>${(item.precio_venta || item.costo || 0).toLocaleString()}</Text>
+                                  <Text style={styles.resultadoNombre} numberOfLines={2}>
+                                    {item.nombre}
+                                  </Text>
+                                  <Text style={styles.resultadoPrecio}>
+                                    ${(item.precio_venta || item.costo || 0).toLocaleString()}
+                                  </Text>
                                 </TouchableOpacity>
                               )}
                               style={{ maxHeight: 200 }}
@@ -566,53 +593,62 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
                           </View>
                         )}
                         <View style={styles.editarBotones}>
-                          <Button mode="text" onPress={() => { setEditandoIndex(null); setBusquedaProducto(''); setResultadosBusqueda([]); }}>
+                          <Button
+                            mode="text"
+                            onPress={() => {
+                              setEditandoIndex(null);
+                              setBusquedaProducto('');
+                              setResultadosBusqueda([]);
+                            }}
+                          >
                             Cancelar
                           </Button>
-                          <Button mode="text" onPress={() => saltarProducto(index)} textColor="#d32f2f">
-                            Omitir este
+                          <Button
+                            mode="text"
+                            onPress={() => saltarProducto(index)}
+                            textColor="#d32f2f"
+                          >
+                            Omitir
                           </Button>
                         </View>
                       </View>
                     ) : (
-                      // Modo normal: mostrar resultado
+                      /* Modo Normal de Mostrar Producto */
                       <>
                         {match.producto_sugerido ? (
                           match.sospechoso && !match.aprendido ? (
-                            // Producto encontrado pero con baja confianza
                             <View style={styles.sospechosoContainer}>
                               <Text style={styles.sospechosoTitulo}>
-                                🤔 No estoy seguro... ¿Es este?
+                                🤔 No estoy seguro... ¿Es este producto?
                               </Text>
                               <Text style={styles.matchSugerido}>{match.producto_sugerido.nombre}</Text>
                               <Text style={styles.matchPrecio}>
                                 ${(match.producto_sugerido.precio_venta || match.producto_sugerido.costo || 0).toLocaleString()}
                               </Text>
                               <Text style={styles.matchScore}>
-                                Similitud: {Math.round(match.score * 100)}%
+                                Similitud estimada: {Math.round(match.score * 100)}%
                               </Text>
                               <View style={styles.sospechosoButtons}>
-                                <Button 
-                                  mode="contained" 
-                                  compact 
+                                <Button
+                                  mode="contained"
+                                  compact
                                   onPress={() => confirmarSugerencia(index)}
                                   buttonColor="#4caf50"
                                   icon="check"
                                 >
                                   Sí, es correcto
                                 </Button>
-                                <Button 
-                                  mode="outlined" 
-                                  compact 
-                                  onPress={() => iniciarEdicionManual(index)}
+                                <Button
+                                  mode="outlined"
+                                  compact
+                                  onPress={() => setEditandoIndex(index)}
                                   icon="magnify"
                                 >
-                                  No, buscar otro
+                                  Buscar otro
                                 </Button>
                               </View>
                             </View>
                           ) : (
-                            // Producto encontrado con buena confianza
                             <>
                               <Text style={styles.matchSugerido}>
                                 {match.aprendido ? '✓ ' : '→ '}{match.producto_sugerido.nombre}
@@ -622,12 +658,14 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
                               </Text>
                               <View style={styles.matchInfoRow}>
                                 <Text style={styles.matchScore}>
-                                  {match.aprendido ? '✓ Aprendido' : `${Math.round(match.score * 100)}% similitud`}
+                                  {match.aprendido
+                                    ? '✓ Recordado por IA'
+                                    : `${Math.round(match.score * 100)}% coincidencia`}
                                 </Text>
-                                <Button 
-                                  mode="text" 
-                                  compact 
-                                  onPress={() => iniciarEdicionManual(index)}
+                                <Button
+                                  mode="text"
+                                  compact
+                                  onPress={() => setEditandoIndex(index)}
                                   icon="pencil"
                                 >
                                   Cambiar
@@ -636,24 +674,23 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
                             </>
                           )
                         ) : (
-                          // No encontrado
                           <View style={styles.noEntendidoContainer}>
                             <Text style={styles.noEntendidoTitulo}>
-                              {`❌ No entendí “${match.nombre_original}”`}
+                              ❌ No encontrado: “{match.nombre_original}”
                             </Text>
                             <Text style={styles.noEntendidoDesc}>
-                              ¿Podrías buscar el producto correcto? La IA aprenderá de tu corrección.
+                              Busca el producto manualmente y la IA aprenderá para futuras ocasiones.
                             </Text>
                             <View style={styles.noEntendidoButtons}>
-                              <Button 
-                                mode="contained" 
-                                onPress={() => iniciarEdicionManual(index)}
+                              <Button
+                                mode="contained"
+                                onPress={() => setEditandoIndex(index)}
                                 icon="magnify"
                               >
-                                Buscar producto
+                                Seleccionar Producto
                               </Button>
-                              <Button 
-                                mode="text" 
+                              <Button
+                                mode="text"
                                 onPress={() => saltarProducto(index)}
                                 textColor="#666"
                               >
@@ -670,9 +707,11 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
                 <Divider style={{ marginVertical: 16 }} />
 
                 <View style={styles.buttonRow}>
-                  <Button mode="outlined" onPress={() => setStep('edit')}>Volver a editar</Button>
-                  <Button 
-                    mode="contained" 
+                  <Button mode="outlined" onPress={() => setStep('edit')}>
+                    Volver a editar
+                  </Button>
+                  <Button
+                    mode="contained"
                     onPress={confirmarSeleccion}
                     disabled={matches.filter(m => m.producto_sugerido).length === 0}
                   >
@@ -683,8 +722,6 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
             </Card>
           )}
         </ScrollView>
-
-
       </View>
     </Modal>
   );
@@ -692,9 +729,9 @@ export default function LectorTexto({ onProductosSeleccionados, onClose, visible
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f5f5' },
-  header: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
     backgroundColor: '#6200ee',
     paddingTop: 40,
@@ -704,46 +741,45 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 20, fontWeight: 'bold', color: '#fff' },
   content: { flex: 1, padding: 16 },
   card: { borderRadius: 12, marginBottom: 16 },
-  stepTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 8, color: '#333' },
+  stepHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  stepTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 4, color: '#333' },
   hint: { fontSize: 13, color: '#666', marginBottom: 16 },
-  methodButton: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    padding: 12,
-    backgroundColor: '#f5f5f5',
-    borderRadius: 8,
-    marginBottom: 12,
-  },
-  methodInfo: { flex: 1, marginLeft: 8 },
-  methodTitle: { fontSize: 16, fontWeight: '600', color: '#333' },
-  methodDesc: { fontSize: 13, color: '#666' },
   textArea: {
     borderWidth: 1,
     borderColor: '#ddd',
     borderRadius: 8,
     padding: 12,
-    minHeight: 200,
+    minHeight: 220,
     fontSize: 14,
     backgroundColor: '#fff',
   },
   buttonRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 16 },
   lineaRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
   lineaInput: { flex: 1, backgroundColor: '#fff' },
-  loadingContainer: { alignItems: 'center', padding: 40 },
-  loadingText: { marginTop: 16, fontSize: 16, color: '#666' },
-  reintentoPanel: {
-    backgroundColor: '#eef3ff',
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 12,
+
+  progressBanner: {
+    backgroundColor: '#f0f4ff',
+    padding: 12,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#c8d6ff',
-    gap: 8,
+    borderColor: '#d0dbe8',
+    marginBottom: 16,
   },
-  reintentoTexto: {
-    fontSize: 13,
-    color: '#24407a',
-  },
+  progressHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  progressText: { flex: 1, fontWeight: 'bold', color: '#1a237e' },
+  progressPercent: { fontWeight: 'bold', color: '#6200ee' },
+  progressBar: { height: 8, borderRadius: 4, marginBottom: 8 },
+  currentNameText: { fontSize: 12, fontStyle: 'italic', color: '#555', marginBottom: 8 },
+  queueControls: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
+
+  summaryBox: { flexDirection: 'row', gap: 8, marginBottom: 12, flexWrap: 'wrap' },
+  summaryBadgeGood: { backgroundColor: '#e8f5e9', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+  badgeTextGood: { color: '#2e7d32', fontWeight: 'bold', fontSize: 12 },
+  summaryBadgeWarning: { backgroundColor: '#fff3e0', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+  badgeTextWarning: { color: '#ef6c00', fontWeight: 'bold', fontSize: 12 },
+  summaryBadgeBad: { backgroundColor: '#ffebee', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+  badgeTextBad: { color: '#c62828', fontWeight: 'bold', fontSize: 12 },
+
   matchCard: {
     backgroundColor: '#fff',
     padding: 12,
@@ -752,16 +788,21 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#e0e0e0',
   },
+  matchAnalizando: { borderColor: '#b3e5fc', backgroundColor: '#e1f5fe' },
   matchSospechoso: { borderColor: '#ff9800', backgroundColor: '#fff3e0' },
   matchNoEntendido: { borderColor: '#d32f2f', backgroundColor: '#ffebee' },
   matchAprendido: { borderColor: '#4caf50', backgroundColor: '#e8f5e9' },
   matchModificado: { borderColor: '#2196f3', backgroundColor: '#e3f2fd' },
+
+  loadingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
+  loadingRowText: { fontSize: 13, color: '#0288d1', fontStyle: 'italic' },
+
   matchOriginal: { fontSize: 12, color: '#666', marginBottom: 8, fontStyle: 'italic' },
   matchSugerido: { fontSize: 15, fontWeight: '600', color: '#333' },
   matchPrecio: { fontSize: 14, color: '#2e7d32', marginTop: 4 },
   matchScore: { fontSize: 12, color: '#666' },
   matchInfoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 },
-  matchNoEncontrado: { fontSize: 14, color: '#d32f2f', fontStyle: 'italic', marginBottom: 8 },
+
   editarContainer: { marginTop: 8 },
   editarTitulo: { fontSize: 13, color: '#333', marginBottom: 8, fontWeight: '500' },
   editarBotones: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
@@ -770,23 +811,13 @@ const styles = StyleSheet.create({
   resultadoItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#e0e0e0' },
   resultadoNombre: { fontSize: 14, color: '#333' },
   resultadoPrecio: { fontSize: 12, color: '#2e7d32', marginTop: 2 },
-  // Estilos para "no entendido"
+
   noEntendidoContainer: { marginTop: 4 },
-  noEntendidoTitulo: { fontSize: 15, fontWeight: '600', color: '#d32f2f', marginBottom: 8 },
-  noEntendidoDesc: { fontSize: 13, color: '#666', marginBottom: 12 },
+  noEntendidoTitulo: { fontSize: 14, fontWeight: '600', color: '#d32f2f', marginBottom: 4 },
+  noEntendidoDesc: { fontSize: 12, color: '#666', marginBottom: 8 },
   noEntendidoButtons: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  // Estilos para "sospechoso"
+
   sospechosoContainer: { marginTop: 4 },
-  sospechosoTitulo: { fontSize: 14, fontWeight: '600', color: '#ff9800', marginBottom: 8 },
+  sospechosoTitulo: { fontSize: 13, fontWeight: '600', color: '#ef6c00', marginBottom: 8 },
   sospechosoButtons: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12, gap: 8 },
-  cameraContainer: { flex: 1 },
-  camera: { flex: 1 },
-  cameraControls: { 
-    position: 'absolute', 
-    bottom: 40, 
-    left: 20, 
-    right: 20,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
 });

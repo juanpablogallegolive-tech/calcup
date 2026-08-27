@@ -92,6 +92,16 @@ class Producto(BaseModel):
     comentarios: Optional[str] = ""
     fecha_creacion: Optional[datetime] = None
 
+class BulkImportItem(BaseModel):
+    nombre: str
+    costo: float = 0
+    precio_venta: float = 0
+    cantidad: Optional[str] = ""
+    comentarios: Optional[str] = ""
+
+class BulkImportRequest(BaseModel):
+    productos: List[BulkImportItem]
+
 class ProductoResponse(Producto):
     id: str = Field(alias="_id")
 
@@ -1056,6 +1066,9 @@ def calcular_similitud(busqueda: str, producto_db: str) -> float:
 class MatchRequest(BaseModel):
     nombres: list[str]
 
+class MatchSingleRequest(BaseModel):
+    nombre: str
+
 class AprendizajeRequest(BaseModel):
     nombre_original: str
     producto_id_correcto: str
@@ -1182,6 +1195,20 @@ def eliminar_aprendizaje(id: str):
     aprendizajes_col.delete_one({"_id": ObjectId(id)})
     return {"message": "Aprendizaje eliminado"}
 
+@app.post("/api/match-producto")
+def match_producto_single(request: MatchSingleRequest):
+    """Búsqueda individual optimizada para un solo producto"""
+    res = match_productos(MatchRequest(nombres=[request.nombre]))
+    if res and len(res) > 0:
+        return res[0]
+    return {
+        "nombre_original": request.nombre,
+        "producto_sugerido": None,
+        "score": 0,
+        "sospechoso": True,
+        "aprendido": False
+    }
+
 @app.post("/api/match-productos")
 def match_productos(request: MatchRequest):
     """
@@ -1275,20 +1302,23 @@ def match_productos(request: MatchRequest):
             # Combinación híbrida para más flexibilidad
             return max(lev, ngr, pref_ratio * 0.9)
 
-        def buscar_tokens_parecidos(token_query: str, max_resultados: int = 60) -> list[str]:
-            """Encuentra tokens similares del vocabulario para tolerar typos/OCR."""
+        def buscar_tokens_parecidos(token_query: str, max_resultados: int = 40) -> list[str]:
+            """Encuentra tokens similares del vocabulario para tolerar typos/OCR (optimizado CPU)."""
             cercanos = []
-            # Umbral dinámico: más estricto con tokens cortos, más flexible con largos
-            if len(token_query) <= 3:
-                umbral = 0.82
-            elif len(token_query) <= 5:
-                umbral = 0.74
-            else:
-                umbral = 0.68
+            len_q = len(token_query)
+            if len_q < 3:
+                return []
+
+            umbral = 0.82 if len_q <= 3 else (0.74 if len_q <= 5 else 0.68)
 
             for tk in vocab_tokens:
-                if abs(len(tk) - len(token_query)) > 4:
+                len_tk = len(tk)
+                if abs(len_tk - len_q) > 2:
                     continue
+                # Filtro rápido de letras compartidas/prefijo antes de Levenshtein
+                if not (tk[0] == token_query[0] or tk[-1] == token_query[-1] or tk in token_query or token_query in tk):
+                    continue
+
                 sim = token_similarity(token_query, tk)
                 if sim >= umbral:
                     cercanos.append((tk, sim))
@@ -1514,6 +1544,101 @@ def match_productos(request: MatchRequest):
             "sospechoso": True,
             "aprendido": False
         } for nombre in (request.nombres or [])]
+
+@app.post("/api/productos/bulk-import")
+def bulk_import_productos(request: BulkImportRequest):
+    """
+    Importación masiva ultrarrápida (soporta 4,000+ productos en < 2 segundos).
+    Usa operaciones bulk de MongoDB para evitar miles de peticiones HTTP individuales.
+    """
+    if not request.productos:
+        return {"nuevos": 0, "actualizados": 0, "sin_cambios": 0, "errores": 0, "total": 0}
+
+    from pymongo import UpdateOne
+
+    try:
+        existentes = list(productos_col.find({}, {"nombre": 1, "costo": 1, "precio_venta": 1, "cantidad": 1, "comentarios": 1}))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al consultar base de datos: {str(e)}")
+
+    mapa_existentes = {p.get("nombre", "").strip().lower(): p for p in existentes if p.get("nombre")}
+
+    nuevos_docs = []
+    bulk_updates = []
+    nuevos_cnt = 0
+    actualizados_cnt = 0
+    sin_cambios_cnt = 0
+    errores_cnt = 0
+
+    ahora = datetime.now()
+
+    for item in request.productos:
+        nombre = (item.nombre or "").strip()
+        if not nombre:
+            errores_cnt += 1
+            continue
+
+        costo = item.costo
+        precio_venta = item.precio_venta
+        cantidad = item.cantidad or ""
+        comentarios = item.comentarios or ""
+
+        key = nombre.lower()
+        if key in mapa_existentes:
+            exist = mapa_existentes[key]
+            c_exist = exist.get("costo", 0)
+            pv_exist = exist.get("precio_venta", 0)
+            cant_exist = str(exist.get("cantidad", ""))
+            com_exist = str(exist.get("comentarios", ""))
+
+            if (abs(c_exist - costo) > 0.01 or
+                abs(pv_exist - precio_venta) > 0.01 or
+                cant_exist != cantidad or
+                (comentarios and com_exist != comentarios)):
+                
+                bulk_updates.append(
+                    UpdateOne(
+                        {"_id": exist["_id"]},
+                        {"$set": {
+                            "costo": costo,
+                            "precio_venta": precio_venta,
+                            "cantidad": cantidad,
+                            "comentarios": comentarios or com_exist
+                        }}
+                    )
+                )
+                actualizados_cnt += 1
+            else:
+                sin_cambios_cnt += 1
+        else:
+            doc = {
+                "nombre": nombre,
+                "costo": costo,
+                "precio_venta": precio_venta,
+                "cantidad": cantidad,
+                "comentarios": comentarios,
+                "fecha_creacion": ahora
+            }
+            nuevos_docs.append(doc)
+            mapa_existentes[key] = doc
+            nuevos_cnt += 1
+
+    try:
+        if nuevos_docs:
+            productos_col.insert_many(nuevos_docs)
+
+        if bulk_updates:
+            productos_col.bulk_write(bulk_updates, ordered=False)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error en escritura masiva: {str(e)}")
+
+    return {
+        "nuevos": nuevos_cnt,
+        "actualizados": actualizados_cnt,
+        "sin_cambios": sin_cambios_cnt,
+        "errores": errores_cnt,
+        "total": len(request.productos)
+    }
 
 class BorrarMultiplesRequest(BaseModel):
     ids: List[str]

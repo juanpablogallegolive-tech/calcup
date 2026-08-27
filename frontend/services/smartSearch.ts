@@ -877,49 +877,104 @@ class SmartSearchEngine {
   }
 
   /**
-   * Match inteligente para el LectorTexto
-   * Busca el mejor producto para cada nombre dado
+   * Analiza un único producto con máxima precisión fuzzy, expansión de sinónimos,
+   * normalización de fracciones/unidades/OCR y consulta de aprendizajes.
+   */
+  async analizarProducto(nombre: string): Promise<{
+    nombre_original: string;
+    producto_sugerido: Producto | null;
+    score: number;
+    sospechoso: boolean;
+    aprendido: boolean;
+    noEncontrado?: boolean;
+  }> {
+    const nombreLimpio = (nombre || '').trim();
+    if (!nombreLimpio) {
+      return {
+        nombre_original: nombre,
+        producto_sugerido: null,
+        score: 0,
+        sospechoso: true,
+        aprendido: false,
+        noEncontrado: true,
+      };
+    }
+
+    await this.inicializar();
+    const queryNorm = normalizar(nombreLimpio);
+
+    // 1) Prioridad Máxima: Aprendizaje previo (Local)
+    const aprendido = this.buscarEnAprendizajes(queryNorm);
+    if (aprendido) {
+      return {
+        nombre_original: nombreLimpio,
+        producto_sugerido: aprendido,
+        score: 1.0,
+        sospechoso: false,
+        aprendido: true,
+      };
+    }
+
+    // 2) Búsqueda inteligente multi-paso (Fuse.js + Deep Scanner + Sinónimos + Medidas)
+    const candidatos = await this.buscar(nombreLimpio, 10);
+    if (!candidatos || candidatos.length === 0) {
+      return {
+        nombre_original: nombreLimpio,
+        producto_sugerido: null,
+        score: 0,
+        sospechoso: true,
+        aprendido: false,
+        noEncontrado: true,
+      };
+    }
+
+    const mejorMatch = candidatos[0];
+
+    // 3) Cálculo fino de nivel de confianza / score
+    const queryTokens = queryNorm.split(' ').filter(t => t.length > 1);
+    const prodNorm = normalizar(mejorMatch.nombre);
+    const prodTokens = prodNorm.split(' ').filter(t => t.length > 1);
+
+    let matchesCount = 0;
+    for (const qt of queryTokens) {
+      if (prodTokens.some(pt => pt === qt || pt.includes(qt) || qt.includes(pt) || levenshteinSimilarity(qt, pt) > 0.72)) {
+        matchesCount++;
+      }
+    }
+
+    const tokenRatio = queryTokens.length > 0 ? matchesCount / queryTokens.length : 0;
+    const levSim = levenshteinSimilarity(queryNorm, prodNorm);
+    const ngramSim = similitudNGramas(queryNorm, prodNorm, 2);
+
+    const combinedScore = Math.min(1.0, Math.max(0.1, (tokenRatio * 0.45) + (levSim * 0.35) + (ngramSim * 0.20)));
+    const esSospechoso = combinedScore < 0.42;
+
+    return {
+      nombre_original: nombreLimpio,
+      producto_sugerido: mejorMatch,
+      score: Math.round(combinedScore * 100) / 100,
+      sospechoso: esSospechoso,
+      aprendido: false,
+    };
+  }
+
+  /**
+   * Match inteligente para múltiples productos (LectorTexto)
    */
   async matchMultiple(nombres: string[]): Promise<Array<{
     nombre_original: string;
     producto_sugerido: Producto | null;
     score: number;
     sospechoso: boolean;
+    aprendido?: boolean;
   }>> {
     await this.inicializar();
-    
-    if (!this.fuse) {
-      return nombres.map(n => ({
-        nombre_original: n,
-        producto_sugerido: null,
-        score: 0,
-        sospechoso: true,
-      }));
+    const resultados = [];
+    for (const nombre of nombres) {
+      const res = await this.analizarProducto(nombre);
+      resultados.push(res);
     }
-    
-    return nombres.map(nombre => {
-      const queryNorm = normalizar(nombre);
-      const results = this.fuse!.search(queryNorm, { limit: 1 });
-      
-      if (results.length === 0) {
-        return {
-          nombre_original: nombre,
-          producto_sugerido: null,
-          score: 0,
-          sospechoso: true,
-        };
-      }
-      
-      const best = results[0];
-      const score = 1 - (best.score || 1); // Invertir: Fuse da 0=mejor, nosotros 1=mejor
-      
-      return {
-        nombre_original: nombre,
-        producto_sugerido: best.item,
-        score: Math.round(score * 1000) / 1000,
-        sospechoso: score < 0.6,
-      };
-    });
+    return resultados;
   }
 
   /**

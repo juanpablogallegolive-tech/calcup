@@ -6,7 +6,7 @@ import { Producto, Flujo, Calculo, Cotizacion, Cliente } from '../types/types';
 // sin variables de entorno configuradas.
 const BACKEND_URL = (
   process.env.EXPO_PUBLIC_BACKEND_URL ||
-  'https://npm-install--g-eas-cli.onrender.com'
+  'https://calcup-api.onrender.com'
 ).replace(/\/$/, '');
 
 const api = axios.create({
@@ -42,6 +42,8 @@ export const productosApi = {
   delete: (id: string) => api.delete(`/productos/${id}`),
   deleteAll: () => api.delete('/productos'),
   deleteMultiple: (ids: string[]) => api.post('/productos/eliminar-multiples', { ids }),
+  bulkImport: (productos: Array<{ nombre: string; costo: number; precio_venta: number; cantidad?: string; comentarios?: string }>) =>
+    api.post<{ nuevos: number; actualizados: number; sin_cambios: number; errores: number; total: number }>('/productos/bulk-import', { productos }),
 };
 
 // Flujos
@@ -88,6 +90,15 @@ export const matchProductos = (nombres: string[]) =>
     sospechoso: boolean;
     aprendido?: boolean;
   }>>('/match-productos', { nombres });
+
+export const matchProductoIndividual = (nombre: string) => 
+  api.post<{
+    nombre_original: string;
+    producto_sugerido: Producto | null;
+    score: number;
+    sospechoso: boolean;
+    aprendido?: boolean;
+  }>('/match-producto', { nombre });
 
 // Aprendizaje de IA
 export const aprendizajesApi = {

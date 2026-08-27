@@ -38,4 +38,3 @@ yarn-error.*
 *.tsbuildinfo
 
 app-example
-package-lock.json
