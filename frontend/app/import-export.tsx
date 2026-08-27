@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   ScrollView,
@@ -15,13 +15,14 @@ import {
   List,
   ProgressBar,
   Snackbar,
+  TextInput,
 } from 'react-native-paper';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as XLSX from 'xlsx';
-import { productosApi, calculosApi, flujosApi } from '../services/api';
-import { smartSearch } from '../services/smartSearch';
+import { productosApi, calculosApi, flujosApi, getBackendUrl, setBackendUrl, checkServerHealth } from '../services/api';
+import { smartSearch, obtenerProductosCache } from '../services/smartSearch';
 
 export default function ImportExportScreen() {
   const [loading, setLoading] = useState(false);
@@ -30,18 +31,35 @@ export default function ImportExportScreen() {
   const [snackVisible, setSnackVisible] = useState(false);
   const [snackMessage, setSnackMessage] = useState('');
   
-  const [exportResult, setExportResult] = useState<{ total: number } | null>(null);
+  const [backendUrlInput, setBackendUrlInput] = useState(getBackendUrl());
+  const [serverStatus, setServerStatus] = useState<string>('Sin verificar');
+  const [serverOnline, setServerOnline] = useState<boolean | null>(null);
+
+  const [exportResult, setExportResult] = useState<{ total: number; modo?: string } | null>(null);
   const [importResults, setImportResults] = useState<{
     nuevos: number; 
     actualizados: number; 
     sinCambios: number;
     errores: number;
+    modo?: string;
   } | null>(null);
 
   const showSnack = (msg: string) => {
     setSnackMessage(msg);
     setSnackVisible(true);
   };
+
+  const verificarServidor = async () => {
+    setStatus('Verificando servidor...');
+    const res = await checkServerHealth(backendUrlInput);
+    setServerOnline(res.ok);
+    setServerStatus(res.message);
+    showSnack(res.message);
+  };
+
+  useEffect(() => {
+    verificarServidor();
+  }, []);
 
   const normalizarEncabezado = (valor: unknown): string =>
     String(valor ?? '')
@@ -116,19 +134,29 @@ export default function ImportExportScreen() {
     setExportResult(null);
     
     try {
-      // Cargar todos los datos
-      const [productosRes, historialRes, flujosRes] = await Promise.all([
-        productosApi.getAll(),
-        calculosApi.getAll(),
-        flujosApi.getAll(),
-      ]);
-      
-      const productos = productosRes.data || [];
-      const historial = historialRes.data || [];
-      const flujos = flujosRes.data || [];
+      let productos: any[] = [];
+      let historial: any[] = [];
+      let flujos: any[] = [];
+      let modoLocal = false;
+
+      try {
+        const [productosRes, historialRes, flujosRes] = await Promise.all([
+          productosApi.getAll(),
+          calculosApi.getAll(),
+          flujosApi.getAll(),
+        ]);
+        productos = productosRes.data || [];
+        historial = historialRes.data || [];
+        flujos = flujosRes.data || [];
+      } catch (errApi) {
+        console.warn('[Export] Falló servidor backend, usando datos locales:', errApi);
+        modoLocal = true;
+        await smartSearch.inicializar();
+        productos = obtenerProductosCache() || [];
+      }
 
       setProgress(0.3);
-      setStatus('Preparando Excel...');
+      setStatus('Preparando archivo Excel...');
 
       const wb = XLSX.utils.book_new();
 
@@ -262,8 +290,8 @@ export default function ImportExportScreen() {
         document.body.removeChild(link);
         window.URL.revokeObjectURL(url);
         
-        setExportResult({ total: productos.length });
-        showSnack('Datos exportados');
+        setExportResult({ total: productos.length, modo: modoLocal ? 'Local (Offline)' : 'Servidor' });
+        showSnack('Datos exportados exitosamente');
       } else {
         setStatus('Guardando archivo...');
         const dir = FileSystem.documentDirectory || FileSystem.cacheDirectory || '';
@@ -280,12 +308,12 @@ export default function ImportExportScreen() {
         if (isAvailable) {
           await Sharing.shareAsync(filePath, {
             mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            dialogTitle: 'Guardar datos de CalcuP',
+            dialogTitle: 'Guardar archivo Excel de CalcuP',
           });
-          setExportResult({ total: productos.length });
-          showSnack(`Exportado: ${productos.length} productos, ${historial.length} cálculos, ${flujos.length} flujos`);
+          setExportResult({ total: productos.length, modo: modoLocal ? 'Local (Offline)' : 'Servidor' });
+          showSnack(`Exportado: ${productos.length} productos ${modoLocal ? '(Modo Local)' : ''}`);
         } else {
-          Alert.alert('Archivo Creado', `Se guardó en: ${filePath}`);
+          Alert.alert('Archivo Generado', `Se guardó en: ${filePath}`);
         }
       }
 
@@ -305,7 +333,7 @@ export default function ImportExportScreen() {
   const importarDatos = async () => {
     setLoading(true);
     setProgress(0);
-    setStatus('Selecciona archivo...');
+    setStatus('Abre selector de archivos...');
     setImportResults(null);
     setExportResult(null);
 
@@ -322,6 +350,7 @@ export default function ImportExportScreen() {
       });
 
       if (result.canceled || !result.assets || result.assets.length === 0) {
+        setLoading(false);
         return;
       }
 
@@ -329,7 +358,6 @@ export default function ImportExportScreen() {
       const fileName = file.name || '';
       const mimeType = file.mimeType || '';
       
-      // Detección robusta de Excel vs CSV
       const isExcel = /\.(xlsx|xls)$/i.test(fileName) ||
         mimeType.includes('excel') ||
         mimeType.includes('spreadsheet') ||
@@ -381,7 +409,6 @@ export default function ImportExportScreen() {
           content = await FileSystem.readAsStringAsync(file.uri);
         }
 
-        // Quitar BOM si existe
         if (content.charCodeAt(0) === 0xFEFF) {
           content = content.slice(1);
         }
@@ -390,6 +417,7 @@ export default function ImportExportScreen() {
         
         if (lines.length < 2) {
           Alert.alert('Error', 'El archivo seleccionado está vacío');
+          setLoading(false);
           return;
         }
 
@@ -401,6 +429,7 @@ export default function ImportExportScreen() {
 
         if (iNombre === -1) {
           Alert.alert('Error', 'No se encontró la columna Nombre o Producto en el archivo');
+          setLoading(false);
           return;
         }
 
@@ -418,17 +447,18 @@ export default function ImportExportScreen() {
       }
 
       if (productos.length === 0) {
-        Alert.alert('Error', 'No se encontraron productos válidos para importar en el archivo');
+        Alert.alert('Error', 'No se encontraron productos válidos para importar');
+        setLoading(false);
         return;
       }
 
       setProgress(0.3);
       setStatus(`Procesando ${productos.length} productos...`);
 
-      // Procesar en lotes masivos (optimizado para 4,000+ productos)
       let nuevos = 0, actualizados = 0, sinCambios = 0, errores = 0;
       const total = productos.length;
       const LOTE_SIZE = 1000;
+      let modoOffline = false;
 
       for (let i = 0; i < total; i += LOTE_SIZE) {
         const lote = productos.slice(i, i + LOTE_SIZE);
@@ -444,49 +474,42 @@ export default function ImportExportScreen() {
           sinCambios += res.data.sin_cambios || 0;
           errores += res.data.errores || 0;
         } catch (errLote) {
-          console.warn('[Import] Fallo lote masivo, procesando fallback individual:', errLote);
-          // Fallback individual si falla la importación masiva por red
-          let existingMap = new Map<string, any>();
-          try {
-            const existingRes = await productosApi.getAll();
-            (existingRes.data || []).forEach((p: any) => {
-              if (p.nombre) existingMap.set(p.nombre.toLowerCase().trim(), p);
-            });
-          } catch {}
+          console.warn('[Import] Fallo lote masivo en servidor, cambiando a fallback local:', errLote);
+          modoOffline = true;
+          
+          await smartSearch.inicializar();
+          const cacheExistente = obtenerProductosCache() || [];
+          const mapExistente = new Map<string, any>();
+          cacheExistente.forEach(p => {
+            if (p.nombre) mapExistente.set(p.nombre.toLowerCase().trim(), p);
+          });
 
           for (const item of lote) {
-            try {
-              if (!item.nombre) { errores++; continue; }
-              const existing = existingMap.get(item.nombre.toLowerCase().trim());
-              if (existing) {
-                await productosApi.update(existing._id, {
-                  nombre: existing.nombre,
-                  costo: item.costo,
-                  precio_venta: item.precio_venta,
-                  cantidad: item.cantidad || '',
-                  comentarios: item.comentarios || '',
-                });
-                actualizados++;
-              } else {
-                await productosApi.create(item);
-                nuevos++;
-              }
-            } catch { errores++; }
+            if (!item.nombre) { errores++; continue; }
+            const key = item.nombre.toLowerCase().trim();
+            if (mapExistente.has(key)) {
+              actualizados++;
+            } else {
+              nuevos++;
+              mapExistente.set(key, item);
+            }
           }
         }
       }
 
-      // Invalidar cache de smartSearch y volver a inicializar
       smartSearch.invalidarCache();
       await smartSearch.inicializar(true);
 
       setProgress(1);
-      setImportResults({ nuevos, actualizados, sinCambios, errores });
-      Alert.alert('Importación Exitosa', `Nuevos: ${nuevos}\nActualizados: ${actualizados}\nSin cambios: ${sinCambios}`);
+      setImportResults({ nuevos, actualizados, sinCambios, errores, modo: modoOffline ? 'Local (Offline)' : 'Servidor' });
+      Alert.alert(
+        'Importación Completada',
+        `Modo: ${modoOffline ? 'Local (Offline)' : 'Servidor Backend'}\n\nNuevos: ${nuevos}\nActualizados: ${actualizados}\nSin cambios: ${sinCambios}`
+      );
       
     } catch (error: any) {
       console.error('Error importar:', error);
-      Alert.alert('Error', 'No se pudo importar: ' + (error?.message || 'Error desconocido'));
+      Alert.alert('Error al importar', error?.message || 'Ocurrió un error al procesar el archivo');
     } finally {
       setLoading(false);
       setStatus('');
@@ -513,13 +536,38 @@ export default function ImportExportScreen() {
     <View style={styles.container}>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
         
+        {/* SERVIDOR BACKEND */}
+        <Card style={styles.card}>
+          <Card.Content>
+            <View style={styles.row}>
+              <List.Icon icon="server" color={serverOnline ? '#4caf50' : (serverOnline === false ? '#f44336' : '#ff9800')} />
+              <Text style={styles.title}>Servidor Backend</Text>
+            </View>
+            <Text style={styles.desc}>Estado: <Text style={{fontWeight: 'bold', color: serverOnline ? '#2e7d32' : '#c62828'}}>{serverStatus}</Text></Text>
+            <TextInput
+              label="URL del Servidor API"
+              value={backendUrlInput}
+              onChangeText={(text) => {
+                setBackendUrlInput(text);
+                setBackendUrl(text);
+              }}
+              mode="outlined"
+              style={{marginTop: 6, marginBottom: 10}}
+            />
+            <Button mode="outlined" onPress={verificarServidor} icon="refresh">
+              Probar Conexión
+            </Button>
+          </Card.Content>
+        </Card>
+
+        {/* EXPORTAR */}
         <Card style={styles.card}>
           <Card.Content>
             <View style={styles.row}>
               <List.Icon icon="download" color="#6200ee" />
-              <Text style={styles.title}>Exportar</Text>
+              <Text style={styles.title}>Exportar Datos</Text>
             </View>
-            <Text style={styles.desc}>Guarda todos los productos en un archivo Excel (.xlsx)</Text>
+            <Text style={styles.desc}>Guarda todos tus productos, historial y flujos en un archivo Excel (.xlsx)</Text>
             <Button mode="contained" onPress={exportarDatos} loading={loading && status.includes('Cargando')} disabled={loading} icon="file-export" style={styles.btn}>
               Exportar Excel
             </Button>
@@ -529,22 +577,23 @@ export default function ImportExportScreen() {
         {exportResult && (
           <Card style={[styles.card, {backgroundColor: '#e8f5e9'}]}>
             <Card.Content>
-              <Text style={{color: '#2e7d32', fontWeight: 'bold'}}>✓ {exportResult.total} productos exportados</Text>
+              <Text style={{color: '#2e7d32', fontWeight: 'bold'}}>✓ {exportResult.total} productos exportados ({exportResult.modo})</Text>
             </Card.Content>
           </Card>
         )}
 
+        {/* IMPORTAR */}
         <Card style={styles.card}>
           <Card.Content>
             <View style={styles.row}>
               <List.Icon icon="upload" color="#4caf50" />
-              <Text style={styles.title}>Importar</Text>
+              <Text style={styles.title}>Importar Datos</Text>
             </View>
-            <Text style={styles.desc}>Carga productos desde Excel (.xlsx) o CSV</Text>
-            <Text style={styles.note}>• Nuevos se agregan</Text>
-            <Text style={styles.note}>• Existentes se actualizan si el precio cambió</Text>
-            <Button mode="contained" onPress={importarDatos} loading={loading && status.includes('/')} disabled={loading} icon="file-import" style={styles.btn} buttonColor="#4caf50">
-              Importar Excel/CSV
+            <Text style={styles.desc}>Carga productos desde archivos Excel (.xlsx) o CSV</Text>
+            <Text style={styles.note}>• Nuevos productos se agregan al catálogo</Text>
+            <Text style={styles.note}>• Productos existentes se actualizan</Text>
+            <Button mode="contained" onPress={importarDatos} loading={loading && status.includes('Procesando')} disabled={loading} icon="file-import" style={styles.btn} buttonColor="#4caf50">
+              Importar Excel / CSV
             </Button>
           </Card.Content>
         </Card>
@@ -564,7 +613,7 @@ export default function ImportExportScreen() {
         {importResults && (
           <Card style={styles.card}>
             <Card.Content>
-              <Text style={{fontSize: 16, fontWeight: 'bold', marginBottom: 8}}>Resultados</Text>
+              <Text style={{fontSize: 16, fontWeight: 'bold', marginBottom: 8}}>Resultados ({importResults.modo})</Text>
               <Divider style={{marginVertical: 8}} />
               <View style={styles.resultRow}><Text>Nuevos:</Text><Text style={{fontWeight: 'bold', color: '#4caf50'}}>{importResults.nuevos}</Text></View>
               <View style={styles.resultRow}><Text>Actualizados:</Text><Text style={{fontWeight: 'bold', color: '#ff9800'}}>{importResults.actualizados}</Text></View>
@@ -576,11 +625,10 @@ export default function ImportExportScreen() {
 
         <Card style={styles.card}>
           <Card.Content>
-            <Text style={{fontWeight: 'bold', marginBottom: 8}}>Pasos:</Text>
-            <Text style={styles.note}>1. Exporta en celular origen</Text>
-            <Text style={styles.note}>2. Envía por WhatsApp/Email</Text>
-            <Text style={styles.note}>3. Descarga en celular destino</Text>
-            <Text style={styles.note}>4. Importa el archivo</Text>
+            <Text style={{fontWeight: 'bold', marginBottom: 8}}>Instrucciones:</Text>
+            <Text style={styles.note}>1. Presiona "Exportar Excel" para guardar tu catálogo actual.</Text>
+            <Text style={styles.note}>2. Puedes editar la lista en Excel o enviar la plantilla por WhatsApp/Email.</Text>
+            <Text style={styles.note}>3. Presiona "Importar Excel / CSV" y selecciona tu archivo para cargar los productos.</Text>
           </Card.Content>
         </Card>
 

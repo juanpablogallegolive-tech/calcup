@@ -1,21 +1,41 @@
 import axios from 'axios';
 import { Producto, Flujo, Calculo, Cotizacion, Cliente } from '../types/types';
 
-// La variable se puede sobrescribir en frontend/.env o en EAS.
-// El fallback evita que la app se cierre al abrirse cuando se instala el APK
-// sin variables de entorno configuradas.
-const BACKEND_URL = (
+let currentBackendUrl = (
   process.env.EXPO_PUBLIC_BACKEND_URL ||
   'https://calcup-api.onrender.com'
 ).replace(/\/$/, '');
 
 const api = axios.create({
-  baseURL: `${BACKEND_URL}/api`,
-  timeout: 45000,
+  baseURL: `${currentBackendUrl}/api`,
+  timeout: 30000,
   headers: {
     'Content-Type': 'application/json',
   },
 });
+
+export const getBackendUrl = () => currentBackendUrl;
+
+export const setBackendUrl = (newUrl: string) => {
+  const cleanUrl = (newUrl || '').trim().replace(/\/$/, '');
+  if (cleanUrl) {
+    currentBackendUrl = cleanUrl;
+    api.defaults.baseURL = `${cleanUrl}/api`;
+  }
+};
+
+export const checkServerHealth = async (customUrl?: string): Promise<{ ok: boolean; message: string }> => {
+  const targetUrl = customUrl ? customUrl.trim().replace(/\/$/, '') : currentBackendUrl;
+  try {
+    const res = await axios.get(`${targetUrl}/api/health`, { timeout: 5000 });
+    if (res.status === 200) {
+      return { ok: true, message: 'Servidor en línea (' + (res.data?.mongo || 'OK') + ')' };
+    }
+    return { ok: false, message: 'Servidor respondió con código ' + res.status };
+  } catch (err: any) {
+    return { ok: false, message: err?.message || 'Sin conexión con el servidor' };
+  }
+};
 
 api.interceptors.response.use(
   (response) => response,
@@ -120,11 +140,6 @@ export const aprendizajesApi = {
   delete: (id: string) => api.delete(`/aprendizajes/${id}`),
 };
 
-// Alias legacy para compatibilidad con LectorTexto
 export const guardarAprendizaje = aprendizajesApi.guardar;
-// ===== NOTA =====
-// La búsqueda inteligente (smartSearch, busquedaInteligente, inicializarIndice)
-// se importa directamente desde '../services/smartSearch' en los componentes.
-// NO se re-exporta aquí para evitar dependencia circular (api ↔ smartSearch).
 
 export default api;
