@@ -67,11 +67,44 @@ export default function ImportExportScreen() {
       valores[normalizarEncabezado(key)] = value;
     });
     return {
-      nombre: String(valores.nombre ?? '').trim(),
-      costo: parseNumero(valores.costo ?? valores.costooriginal),
-      precio_venta: parseNumero(valores.precioventa ?? valores.costobase ?? valores.precio),
-      cantidad: String(valores.cantidad ?? '').trim(),
-      comentarios: String(valores.comentarios ?? '').trim(),
+      nombre: String(
+        valores.nombre ??
+        valores.producto ??
+        valores.product ??
+        valores.descripcion ??
+        valores.articulo ??
+        valores.item ??
+        ''
+      ).trim(),
+      costo: parseNumero(
+        valores.costo ??
+        valores.costooriginal ??
+        valores.costobase ??
+        valores.compra ??
+        0
+      ),
+      precio_venta: parseNumero(
+        valores.precioventa ??
+        valores.costobase ??
+        valores.precio ??
+        valores.pventa ??
+        valores.venta ??
+        valores.costo ??
+        0
+      ),
+      cantidad: String(
+        valores.cantidad ??
+        valores.cant ??
+        valores.stock ??
+        ''
+      ).trim(),
+      comentarios: String(
+        valores.comentarios ??
+        valores.comentario ??
+        valores.notas ??
+        valores.nota ??
+        ''
+      ).trim(),
     };
   };
 
@@ -102,7 +135,6 @@ export default function ImportExportScreen() {
       // HOJA 1: Productos
       let productosData: any[];
       if (productos.length === 0) {
-        // Template vacío - solo encabezados
         productosData = [{
           'Nombre': '',
           'Costo': '',
@@ -128,7 +160,6 @@ export default function ImportExportScreen() {
       // HOJA 2: Historial
       let historialData: any[];
       if (historial.length === 0) {
-        // Template vacío - solo encabezados
         historialData = [{
           'Producto': '',
           'Flujo': '',
@@ -178,7 +209,6 @@ export default function ImportExportScreen() {
       // HOJA 3: Flujos
       let flujosData: any[];
       if (flujos.length === 0) {
-        // Template vacío - solo encabezados
         flujosData = [{
           'Nombre_Flujo': '',
           'Operacion': '',
@@ -236,7 +266,10 @@ export default function ImportExportScreen() {
         showSnack('Datos exportados');
       } else {
         setStatus('Guardando archivo...');
-        const filePath = `${FileSystem.documentDirectory}${fileName}`;
+        const dir = FileSystem.documentDirectory || FileSystem.cacheDirectory || '';
+        const cleanDir = dir.endsWith('/') ? dir : `${dir}/`;
+        const filePath = `${cleanDir}${fileName}`;
+
         await FileSystem.writeAsStringAsync(filePath, excelBase64, {
           encoding: FileSystem.EncodingType.Base64,
         });
@@ -247,18 +280,20 @@ export default function ImportExportScreen() {
         if (isAvailable) {
           await Sharing.shareAsync(filePath, {
             mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            dialogTitle: 'Guardar datos',
+            dialogTitle: 'Guardar datos de CalcuP',
           });
           setExportResult({ total: productos.length });
           showSnack(`Exportado: ${productos.length} productos, ${historial.length} cálculos, ${flujos.length} flujos`);
+        } else {
+          Alert.alert('Archivo Creado', `Se guardó en: ${filePath}`);
         }
       }
 
       setProgress(1);
       
     } catch (error: any) {
-      console.error('Error:', error);
-      Alert.alert('Error', error?.message || 'No se pudo exportar');
+      console.error('Error exportar:', error);
+      Alert.alert('Error al exportar', error?.message || 'No se pudo exportar');
     } finally {
       setLoading(false);
       setStatus('');
@@ -286,13 +321,20 @@ export default function ImportExportScreen() {
         copyToCacheDirectory: true,
       });
 
-      if (result.canceled) {
+      if (result.canceled || !result.assets || result.assets.length === 0) {
         return;
       }
 
       const file = result.assets[0];
       const fileName = file.name || '';
-      const isExcel = /\.(xlsx|xls)$/i.test(fileName);
+      const mimeType = file.mimeType || '';
+      
+      // Detección robusta de Excel vs CSV
+      const isExcel = /\.(xlsx|xls)$/i.test(fileName) ||
+        mimeType.includes('excel') ||
+        mimeType.includes('spreadsheet') ||
+        mimeType.includes('sheet') ||
+        mimeType.includes('officedocument');
       
       setStatus('Leyendo archivo...');
       setProgress(0.2);
@@ -306,32 +348,30 @@ export default function ImportExportScreen() {
       }[] = [];
 
       if (isExcel) {
-        // Leer archivo Excel
         let fileContent: string;
         
         if (Platform.OS === 'web') {
           const response = await fetch(file.uri);
           const arrayBuffer = await response.arrayBuffer();
           const wb = XLSX.read(arrayBuffer, { type: 'array' });
-          const wsName = wb.SheetNames[0];
-          const ws = wb.Sheets[wsName];
+          const sheetName = wb.SheetNames.find(s => /producto|inventario|catalogo|stock/i.test(s)) || wb.SheetNames[0];
+          const ws = wb.Sheets[sheetName];
           const jsonData = XLSX.utils.sheet_to_json(ws);
-          
-          productos = jsonData.map(productoDesdeFila).filter((producto) => producto.nombre);
+          productos = jsonData.map(productoDesdeFila).filter((p) => p.nombre);
         } else {
           fileContent = await FileSystem.readAsStringAsync(file.uri, {
             encoding: FileSystem.EncodingType.Base64,
           });
           
           const wb = XLSX.read(fileContent, { type: 'base64' });
-          const wsName = wb.SheetNames[0];
-          const ws = wb.Sheets[wsName];
+          const sheetName = wb.SheetNames.find(s => /producto|inventario|catalogo|stock/i.test(s)) || wb.SheetNames[0];
+          const ws = wb.Sheets[sheetName];
           const jsonData = XLSX.utils.sheet_to_json(ws);
           
-          productos = jsonData.map(productoDesdeFila).filter((producto) => producto.nombre);
+          productos = jsonData.map(productoDesdeFila).filter((p) => p.nombre);
         }
       } else {
-        // Leer CSV (mantener compatibilidad)
+        // Leer CSV
         let content: string;
         
         if (Platform.OS === 'web') {
@@ -341,7 +381,7 @@ export default function ImportExportScreen() {
           content = await FileSystem.readAsStringAsync(file.uri);
         }
 
-        // Quitar BOM
+        // Quitar BOM si existe
         if (content.charCodeAt(0) === 0xFEFF) {
           content = content.slice(1);
         }
@@ -349,18 +389,18 @@ export default function ImportExportScreen() {
         const lines = content.split(/\r?\n/).filter(l => l.trim());
         
         if (lines.length < 2) {
-          Alert.alert('Error', 'Archivo vacío');
+          Alert.alert('Error', 'El archivo seleccionado está vacío');
           return;
         }
 
         const delimitador = lines[0].includes(';') && !lines[0].includes(',') ? ';' : ',';
         const header = parseCSVLine(lines[0], delimitador).map(h => normalizarEncabezado(h));
-        const iNombre = header.findIndex(h => h.includes('nombre') || h.includes('name'));
-        const iCosto = header.findIndex(h => h === 'costo' || h.includes('costooriginal'));
-        const iPrecioVenta = header.findIndex(h => h.includes('precioventa') || h.includes('costobase') || h === 'precio');
+        const iNombre = header.findIndex(h => h.includes('nombre') || h.includes('name') || h.includes('producto') || h.includes('descripcion'));
+        const iCosto = header.findIndex(h => h === 'costo' || h.includes('costooriginal') || h.includes('compra'));
+        const iPrecioVenta = header.findIndex(h => h.includes('precioventa') || h.includes('costobase') || h === 'precio' || h.includes('venta'));
 
         if (iNombre === -1) {
-          Alert.alert('Error', 'No se encontró columna Nombre');
+          Alert.alert('Error', 'No se encontró la columna Nombre o Producto en el archivo');
           return;
         }
 
@@ -378,14 +418,14 @@ export default function ImportExportScreen() {
       }
 
       if (productos.length === 0) {
-        Alert.alert('Error', 'No se encontraron productos en el archivo');
+        Alert.alert('Error', 'No se encontraron productos válidos para importar en el archivo');
         return;
       }
 
       setProgress(0.3);
       setStatus(`Procesando ${productos.length} productos...`);
 
-      // Procesar en lotes masivos (optimizado para 4,000+ productos en < 3 segundos)
+      // Procesar en lotes masivos (optimizado para 4,000+ productos)
       let nuevos = 0, actualizados = 0, sinCambios = 0, errores = 0;
       const total = productos.length;
       const LOTE_SIZE = 1000;
@@ -404,13 +444,15 @@ export default function ImportExportScreen() {
           sinCambios += res.data.sin_cambios || 0;
           errores += res.data.errores || 0;
         } catch (errLote) {
-          console.warn('[Import] Error en lote masivo, procesando individualmente:', errLote);
-          // Fallback individual si falla el lote completo por red
-          const existingRes = await productosApi.getAll();
-          const existingMap = new Map<string, any>();
-          existingRes.data.forEach((p: any) => {
-            existingMap.set(p.nombre.toLowerCase().trim(), p);
-          });
+          console.warn('[Import] Fallo lote masivo, procesando fallback individual:', errLote);
+          // Fallback individual si falla la importación masiva por red
+          let existingMap = new Map<string, any>();
+          try {
+            const existingRes = await productosApi.getAll();
+            (existingRes.data || []).forEach((p: any) => {
+              if (p.nombre) existingMap.set(p.nombre.toLowerCase().trim(), p);
+            });
+          } catch {}
 
           for (const item of lote) {
             try {
@@ -440,11 +482,11 @@ export default function ImportExportScreen() {
 
       setProgress(1);
       setImportResults({ nuevos, actualizados, sinCambios, errores });
-      Alert.alert('Listo', `Nuevos: ${nuevos}\nActualizados: ${actualizados}\nSin cambios: ${sinCambios}`);
+      Alert.alert('Importación Exitosa', `Nuevos: ${nuevos}\nActualizados: ${actualizados}\nSin cambios: ${sinCambios}`);
       
     } catch (error: any) {
       console.error('Error importar:', error);
-      Alert.alert('Error', 'No se pudo importar: ' + (error?.message || ''));
+      Alert.alert('Error', 'No se pudo importar: ' + (error?.message || 'Error desconocido'));
     } finally {
       setLoading(false);
       setStatus('');
