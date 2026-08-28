@@ -1,7 +1,11 @@
 
 import Fuse, { IFuseOptions } from 'fuse.js';
+import { Platform } from 'react-native';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Producto } from '../types/types';
 import { productosApi, aprendizajesApi } from './api';
+
+const CACHE_FILE = `${FileSystem.documentDirectory || FileSystem.cacheDirectory || ''}/calcup_products_cache.json`;
 
 // ==================== CONFIGURACIÓN ====================
 
@@ -544,7 +548,7 @@ class SmartSearchEngine {
     const now = Date.now();
     
     // Si la caché es reciente y no se fuerza, no recargar
-    if (!forceRefresh && this.fuse && (now - this.lastUpdate) < this.CACHE_TTL) {
+    if (!forceRefresh && this.fuse && (now - this.lastUpdate) < this.CACHE_TTL && this.productos.length > 0) {
       return;
     }
     
@@ -553,14 +557,27 @@ class SmartSearchEngine {
     this.isLoading = true;
     
     try {
-      const response = await productosApi.getAll();
-      const productosRaw: Producto[] = response.data;
+      let productosRaw: Producto[] = [];
       
+      try {
+        const response = await productosApi.getAll();
+        productosRaw = response.data || [];
+        if (productosRaw.length > 0) {
+          this.guardarProductosLocal(productosRaw).catch(() => {});
+        }
+      } catch (errApi) {
+        console.warn('[SmartSearch] Servidor no disponible, intentando cargar de disco:', errApi);
+      }
+
+      if (productosRaw.length === 0) {
+        productosRaw = await this.cargarCacheDisco();
+      }
+
       // Enriquecer cada producto con campos normalizados
       this.productos = productosRaw.map(p => ({
         ...p,
-        nombreNormalizado: normalizar(p.nombre),
-        nombreExpandido: expandirSinonimos(normalizar(p.nombre)),
+        nombreNormalizado: normalizar(p.nombre || ''),
+        nombreExpandido: expandirSinonimos(normalizar(p.nombre || '')),
       }));
       
       // Crear índice Fuse.js
@@ -578,6 +595,77 @@ class SmartSearchEngine {
     } finally {
       this.isLoading = false;
     }
+  }
+
+  /**
+   * Guarda y actualiza productos en la caché local persistente
+   */
+  async guardarProductosLocal(nuevosProductos: Producto[]): Promise<void> {
+    try {
+      const mapa = new Map<string, Producto>();
+      
+      // Preservar productos existentes en la caché actual
+      this.productos.forEach(p => {
+        if (p && p.nombre) {
+          mapa.set(p.nombre.toLowerCase().trim(), p);
+        }
+      });
+      
+      // Insertar o actualizar con los nuevos productos
+      nuevosProductos.forEach((p, idx) => {
+        if (p && p.nombre) {
+          const key = p.nombre.toLowerCase().trim();
+          const pFormateado: Producto = {
+            _id: p._id || `loc_${Date.now()}_${idx}`,
+            nombre: p.nombre,
+            costo: p.costo || 0,
+            precio_venta: p.precio_venta || 0,
+            cantidad: p.cantidad || '',
+            comentarios: p.comentarios || '',
+          };
+          mapa.set(key, pFormateado);
+        }
+      });
+      
+      const productosArray = Array.from(mapa.values());
+      
+      this.productos = productosArray.map(p => ({
+        ...p,
+        nombreNormalizado: normalizar(p.nombre || ''),
+        nombreExpandido: expandirSinonimos(normalizar(p.nombre || '')),
+      }));
+      
+      this.fuse = new Fuse(this.productos, FUSE_OPTIONS);
+      this.lastUpdate = Date.now();
+      
+      if (Platform.OS !== 'web' && FileSystem.writeAsStringAsync) {
+        await FileSystem.writeAsStringAsync(CACHE_FILE, JSON.stringify(productosArray));
+      }
+      console.log(`[SmartSearch] ${productosArray.length} productos guardados y persistidos en disco.`);
+    } catch (err) {
+      console.warn('[SmartSearch] Error al guardar productos localmente:', err);
+    }
+  }
+
+  /**
+   * Carga productos guardados en disco persistente
+   */
+  async cargarCacheDisco(): Promise<Producto[]> {
+    try {
+      if (Platform.OS === 'web' || !FileSystem.getInfoAsync) return [];
+      const info = await FileSystem.getInfoAsync(CACHE_FILE);
+      if (info.exists) {
+        const content = await FileSystem.readAsStringAsync(CACHE_FILE);
+        const data = JSON.parse(content);
+        if (Array.isArray(data) && data.length > 0) {
+          console.log(`[SmartSearch] Se cargaron ${data.length} productos desde el disco local.`);
+          return data;
+        }
+      }
+    } catch (err) {
+      console.warn('[SmartSearch] Error leyendo caché de disco:', err);
+    }
+    return [];
   }
 
   /**

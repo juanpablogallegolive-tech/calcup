@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useFocusEffect } from 'expo-router';
 import {
   View,
   FlatList,
@@ -53,9 +54,11 @@ export default function ProductsScreen() {
   // ⚡ Perf: debounce del filtro local para no re-filtrar en cada tecla
   const debouncedSearch = useDebounceValue(searchQuery, 250);
 
-  useEffect(() => {
-    loadProductos();
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      loadProductos();
+    }, [])
+  );
 
   useEffect(() => {
     if (debouncedSearch.trim()) {
@@ -77,10 +80,19 @@ export default function ProductsScreen() {
       try {
         const response = await productosApi.getAll();
         productosData = response.data || [];
+        if (productosData.length > 0) {
+          smartSearch.guardarProductosLocal(productosData).catch(() => {});
+        }
       } catch (errApi) {
         console.warn('[ProductsScreen] Falló conexión con backend, cargando desde caché local:', errApi);
+      }
+
+      if (!productosData || productosData.length === 0) {
         await smartSearch.inicializar();
         productosData = obtenerProductosCache() || [];
+        if (productosData.length === 0) {
+          productosData = await smartSearch.cargarCacheDisco();
+        }
       }
 
       setProductos(productosData);

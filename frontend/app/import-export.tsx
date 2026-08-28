@@ -497,6 +497,20 @@ export default function ImportExportScreen() {
         }
       }
 
+      // Persistir siempre en el motor de búsqueda y disco local
+      try {
+        await smartSearch.guardarProductosLocal(productos.map((p, idx) => ({
+          _id: `imp_${Date.now()}_${idx}`,
+          nombre: p.nombre,
+          costo: p.costo || 0,
+          precio_venta: p.precio_venta || 0,
+          cantidad: p.cantidad || '',
+          comentarios: p.comentarios || '',
+        })));
+      } catch (errDisc) {
+        console.warn('[Import] Error persistiendo disco local:', errDisc);
+      }
+
       smartSearch.invalidarCache();
       await smartSearch.inicializar(true);
 
