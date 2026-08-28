@@ -49,7 +49,7 @@ def mongo_ok() -> bool:
     if now - _mongo_status["last_check"] < 10:
         return _mongo_status["ok"]
     try:
-        client.admin.command("ping")
+        client.admin.command("ping", maxTimeMS=1000)
         _mongo_status["ok"] = True
     except Exception as e:
         _mongo_status["ok"] = False
@@ -211,11 +211,17 @@ def aplicar_operacion(precio_base: float, operacion: dict, valor: float) -> floa
 
 @app.get("/api/productos")
 def get_productos(skip: int = 0, limit: int = 0):
-    query = productos_col.find().skip(skip)
-    if limit > 0:
-        query = query.limit(limit)
-    productos = list(query)
-    return [serialize_doc(p) for p in productos]
+    if not mongo_ok():
+        return []
+    try:
+        query = productos_col.find().skip(skip)
+        if limit > 0:
+            query = query.limit(limit)
+        productos = list(query)
+        return [serialize_doc(p) for p in productos]
+    except Exception as e:
+        print(f"Error en get_productos: {e}")
+        return []
 
 @app.get("/api/productos/count")
 def count_productos():
@@ -269,8 +275,14 @@ def eliminar_producto(producto_id: str):
 
 @app.get("/api/flujos")
 def get_flujos():
-    flujos = list(flujos_col.find())
-    return [serialize_doc(f) for f in flujos]
+    if not mongo_ok():
+        return []
+    try:
+        flujos = list(flujos_col.find())
+        return [serialize_doc(f) for f in flujos]
+    except Exception as e:
+        print(f"Error en get_flujos: {e}")
+        return []
 
 @app.get("/api/flujos/{flujo_id}")
 def get_flujo(flujo_id: str):
@@ -311,20 +323,24 @@ def get_calculos(skip: int = 0, limit: int = 50,
                  nombre: Optional[str] = None,
                  fecha_desde: Optional[str] = None,
                  fecha_hasta: Optional[str] = None):
-    query = {}
-    
-    if nombre:
-        query["nombre_producto"] = {"$regex": nombre, "$options": "i"}
-    
-    if fecha_desde or fecha_hasta:
-        query["fecha"] = {}
-        if fecha_desde:
-            query["fecha"]["$gte"] = datetime.fromisoformat(fecha_desde)
-        if fecha_hasta:
-            query["fecha"]["$lte"] = datetime.fromisoformat(fecha_hasta)
-    
-    calculos = list(calculos_col.find(query).sort("fecha", -1).skip(skip).limit(limit))
-    return [serialize_doc(c) for c in calculos]
+    if not mongo_ok():
+        return []
+    try:
+        query = {}
+        if nombre:
+            query["nombre_producto"] = {"$regex": nombre, "$options": "i"}
+        if fecha_desde or fecha_hasta:
+            query["fecha"] = {}
+            if fecha_desde:
+                query["fecha"]["$gte"] = datetime.fromisoformat(fecha_desde)
+            if fecha_hasta:
+                query["fecha"]["$lte"] = datetime.fromisoformat(fecha_hasta)
+        
+        calculos = list(calculos_col.find(query).sort("fecha", -1).skip(skip).limit(limit))
+        return [serialize_doc(c) for c in calculos]
+    except Exception as e:
+        print(f"Error en get_calculos: {e}")
+        return []
 
 @app.get("/api/calculos/{calculo_id}")
 def get_calculo(calculo_id: str):
@@ -368,8 +384,14 @@ def eliminar_calculo(calculo_id: str):
 
 @app.get("/api/cotizaciones")
 def get_cotizaciones(skip: int = 0, limit: int = 50):
-    cotizaciones = list(cotizaciones_col.find().sort("fecha", -1).skip(skip).limit(limit))
-    return [serialize_doc(c) for c in cotizaciones]
+    if not mongo_ok():
+        return []
+    try:
+        cotizaciones = list(cotizaciones_col.find().sort("fecha", -1).skip(skip).limit(limit))
+        return [serialize_doc(c) for c in cotizaciones]
+    except Exception as e:
+        print(f"Error en get_cotizaciones: {e}")
+        return []
 
 @app.get("/api/cotizaciones/{cotizacion_id}")
 def get_cotizacion(cotizacion_id: str):
