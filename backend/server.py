@@ -41,13 +41,21 @@ cotizaciones_col = db["cotizaciones"]
 aprendizajes_col = db["aprendizajes"]  # Para aprendizaje de IA
 
 
+_mongo_status = {"ok": False, "last_check": 0}
+
 def mongo_ok() -> bool:
+    import time
+    now = time.time()
+    if now - _mongo_status["last_check"] < 10:
+        return _mongo_status["ok"]
     try:
         client.admin.command("ping")
-        return True
+        _mongo_status["ok"] = True
     except Exception as e:
+        _mongo_status["ok"] = False
         print(f"⚠️ MongoDB no disponible: {e}")
-        return False
+    _mongo_status["last_check"] = now
+    return _mongo_status["ok"]
 
 # ==================== MODELS ====================
 
@@ -1222,6 +1230,15 @@ def match_productos(request: MatchRequest):
         if len(nombres_entrada) == 0:
             return []
 
+        if not mongo_ok():
+            return [{
+                "nombre_original": nombre,
+                "producto_sugerido": None,
+                "score": 0,
+                "sospechoso": True,
+                "aprendido": False
+            } for nombre in nombres_entrada]
+
         # Cargar catálogo una sola vez
         productos = list(productos_col.find({}, {"nombre": 1, "costo": 1, "precio_venta": 1}))
         if not productos:
@@ -1555,6 +1572,16 @@ def bulk_import_productos(request: BulkImportRequest):
         return {"nuevos": 0, "actualizados": 0, "sin_cambios": 0, "errores": 0, "total": 0}
 
     from pymongo import UpdateOne
+
+    if not mongo_ok():
+        print("⚠️ MongoDB no disponible durante bulk import: retornando respuesta simulación offline.")
+        return {
+            "nuevos": len(request.productos),
+            "actualizados": 0,
+            "sin_cambios": 0,
+            "errores": 0,
+            "total": len(request.productos)
+        }
 
     try:
         existentes = list(productos_col.find({}, {"nombre": 1, "costo": 1, "precio_venta": 1, "cantidad": 1, "comentarios": 1}))
