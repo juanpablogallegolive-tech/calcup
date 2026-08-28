@@ -178,9 +178,17 @@ SINONIMOS_BASICO = {
 SINONIMOS_INVERSO = SINONIMOS_BASICO.copy()
 
 def serialize_doc(doc):
-    if doc and "_id" in doc:
-        doc["_id"] = str(doc["_id"])
-    return doc
+    if not doc:
+        return doc
+    doc_copy = dict(doc)
+    if "_id" in doc_copy:
+        doc_copy["_id"] = str(doc_copy["_id"])
+    return doc_copy
+
+def safe_object_id(id_str: str) -> Optional[ObjectId]:
+    if id_str and isinstance(id_str, str) and ObjectId.is_valid(id_str):
+        return ObjectId(id_str)
+    return None
 
 def aplicar_operacion(precio_base: float, operacion: dict, valor: float) -> float:
     tipo_op = operacion["tipo_operacion"]
@@ -241,7 +249,12 @@ def buscar_productos(q: str, limit: int = 200):
 
 @app.get("/api/productos/{producto_id}")
 def get_producto(producto_id: str):
-    producto = productos_col.find_one({"_id": ObjectId(producto_id)})
+    if not mongo_ok():
+        raise HTTPException(status_code=503, detail="Servidor en modo offline")
+    oid = safe_object_id(producto_id)
+    if not oid:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+    producto = productos_col.find_one({"_id": oid})
     if not producto:
         raise HTTPException(status_code=404, detail="Producto no encontrado")
     return serialize_doc(producto)
@@ -250,25 +263,34 @@ def get_producto(producto_id: str):
 def crear_producto(producto: Producto):
     producto_dict = producto.model_dump()
     producto_dict["fecha_creacion"] = datetime.now()
-    result = productos_col.insert_one(producto_dict)
-    producto_dict["_id"] = str(result.inserted_id)
+    if mongo_ok():
+        result = productos_col.insert_one(producto_dict)
+        producto_dict["_id"] = str(result.inserted_id)
+    else:
+        producto_dict["_id"] = f"local_{int(datetime.now().timestamp()*1000)}"
     return serialize_doc(producto_dict)
 
 @app.put("/api/productos/{producto_id}")
 def actualizar_producto(producto_id: str, producto: Producto):
+    if not mongo_ok():
+        return {"message": "Producto actualizado (modo local)"}
+    oid = safe_object_id(producto_id)
+    if not oid:
+        return {"message": "Producto actualizado (local)"}
     result = productos_col.update_one(
-        {"_id": ObjectId(producto_id)},
+        {"_id": oid},
         {"$set": producto.model_dump(exclude_unset=True)}
     )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Producto no encontrado")
     return {"message": "Producto actualizado"}
 
 @app.delete("/api/productos/{producto_id}")
 def eliminar_producto(producto_id: str):
-    result = productos_col.delete_one({"_id": ObjectId(producto_id)})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Producto no encontrado")
+    if not mongo_ok():
+        return {"message": "Producto eliminado (modo local)"}
+    oid = safe_object_id(producto_id)
+    if not oid:
+        return {"message": "Producto eliminado (local)"}
+    result = productos_col.delete_one({"_id": oid})
     return {"message": "Producto eliminado"}
 
 # ==================== ENDPOINTS FLUJOS ====================
