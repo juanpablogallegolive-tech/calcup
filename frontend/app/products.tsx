@@ -26,7 +26,7 @@ import {
 import { productosApi } from '../services/api';
 import { Producto } from '../types/types';
 import { useDebounceValue } from '../hooks/useDebounce';
-import { smartSearch } from '../services/smartSearch';
+import { smartSearch, obtenerProductosCache } from '../services/smartSearch';
 
 export default function ProductsScreen() {
   const [productos, setProductos] = useState<Producto[]>([]);
@@ -61,7 +61,7 @@ export default function ProductsScreen() {
     if (debouncedSearch.trim()) {
       const q = debouncedSearch.toLowerCase();
       const filtered = productos.filter(p =>
-        p.nombre.toLowerCase().includes(q)
+        p.nombre && p.nombre.toLowerCase().includes(q)
       );
       setFilteredProductos(filtered);
     } else {
@@ -72,9 +72,17 @@ export default function ProductsScreen() {
   const loadProductos = async () => {
     try {
       setLoading(true);
-      // Cargar TODOS los productos (sin límite)
-      const response = await productosApi.getAll();
-      const productosData = response.data;
+      let productosData: Producto[] = [];
+
+      try {
+        const response = await productosApi.getAll();
+        productosData = response.data || [];
+      } catch (errApi) {
+        console.warn('[ProductsScreen] Falló conexión con backend, cargando desde caché local:', errApi);
+        await smartSearch.inicializar();
+        productosData = obtenerProductosCache() || [];
+      }
+
       setProductos(productosData);
       setFilteredProductos(productosData);
       setTotalProductos(productosData.length);
@@ -201,7 +209,7 @@ export default function ProductsScreen() {
   };
 
   const formatPrice = (price: number) => {
-    return '$' + price.toLocaleString('es-CO', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    return '$' + (price || 0).toLocaleString('es-CO', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
   };
 
   // ----- Borrado Completo y Selección Múltiple -----
@@ -484,7 +492,7 @@ export default function ProductsScreen() {
       ) : (
         <FlatList
           data={filteredProductos}
-          keyExtractor={(item) => item._id}
+          keyExtractor={(item, index) => item._id || `prod-${index}`}
           renderItem={renderProduct}
           contentContainerStyle={styles.listContent}
           refreshControl={
